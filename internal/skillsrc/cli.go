@@ -54,7 +54,7 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 		var result Result
 		result, err = engine.Sync(ctx)
 		if err == nil {
-			fmt.Fprintf(options.Out, "synced (repository acquisitions: %d)\n", result.Acquisitions)
+			printResult(options.Out, "sync complete", result)
 		}
 	case "update":
 		var result Result
@@ -70,7 +70,7 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 			for _, local := range result.LocalSkipped {
 				fmt.Fprintf(options.Out, "%s: local (no remote version)\n", local)
 			}
-			fmt.Fprintf(options.Out, "updated and synced (repository acquisitions: %d)\n", result.Acquisitions)
+			printResult(options.Out, "update complete", result)
 		}
 	case "list":
 		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err)
@@ -91,6 +91,30 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 		return 1
 	}
 	return 0
+}
+
+func printResult(output io.Writer, label string, result Result) {
+	for _, fetch := range result.Fetches {
+		commit := ""
+		if fetch.Commit != "" {
+			commit = " (" + fetch.Commit + ")"
+		}
+		fmt.Fprintf(output, "fetched %s: %s%s\n", fetch.Source, fetch.Reason, commit)
+	}
+	counts := map[string]int{"installed": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
+	names := map[string][]string{}
+	for _, skill := range result.Skills {
+		counts[skill.Action]++
+		if skill.Action != "unchanged" {
+			names[skill.Action] = append(names[skill.Action], skill.Name)
+		}
+	}
+	for _, action := range []string{"installed", "repaired", "pruned"} {
+		if len(names[action]) > 0 {
+			fmt.Fprintf(output, "%s: %s\n", action, strings.Join(names[action], ", "))
+		}
+	}
+	fmt.Fprintf(output, "%s: %d installed, %d repaired, %d unchanged, %d pruned; %d repositories fetched\n", label, counts["installed"], counts["repaired"], counts["unchanged"], counts["pruned"], len(result.Fetches))
 }
 
 func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer) error {

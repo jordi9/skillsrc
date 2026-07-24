@@ -37,6 +37,24 @@ func TestGitOperationAcquiresEachRepositoryOnce(t *testing.T) {
 	}
 }
 
+func TestGitOperationExplainsMissingLockedCommitFetch(t *testing.T) {
+	t.Parallel()
+	remote, commit := makeGitRemote(t, map[string]string{"one/SKILL.md": "---\nname: one\n---\n"})
+	op := NewGitOperation(filepath.Join(t.TempDir(), "cache"), "git")
+
+	got, err := op.Resolve(context.Background(), remote, "main", false, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != commit {
+		t.Fatalf("commit = %q, want %q", got, commit)
+	}
+	fetches := op.Fetches()
+	if len(fetches) != 1 || fetches[0].Source != remote || fetches[0].Reason != "locked commit missing from cache" || fetches[0].Commit != commit {
+		t.Fatalf("fetches = %#v", fetches)
+	}
+}
+
 func TestGitOperationCachedCommitNeedsNoFetch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

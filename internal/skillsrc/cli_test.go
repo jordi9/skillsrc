@@ -33,6 +33,12 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "installed: one")
+	assert.Contains(t, output.String(), "1 installed, 0 repaired, 0 unchanged, 0 pruned; 0 repositories fetched")
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "0 installed, 0 repaired, 1 unchanged, 0 pruned; 0 repositories fetched")
 	output.Reset()
 	errorOutput.Reset()
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
@@ -47,6 +53,21 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	var report DoctorReport
 	require.NoError(t, json.Unmarshal(output.Bytes(), &report))
 	assert.Empty(t, report.Issues)
+}
+
+func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remote, _ := makeGitRemote(t, map[string]string{"one/SKILL.md": "---\nname: one\n---\n"})
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\nrepo=\""+remote+"\"\nref=\"main\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+	var output, errorOutput bytes.Buffer
+	options.Out, options.Err = &output, &errorOutput
+
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "fetched "+remote+": new or changed declaration")
+	assert.Contains(t, output.String(), "1 repositories fetched")
 }
 
 func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {

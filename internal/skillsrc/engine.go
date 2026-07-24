@@ -21,9 +21,22 @@ type Options struct {
 }
 
 type Result struct {
-	Acquisitions int      `json:"acquisitions"`
-	Changes      []Change `json:"changes,omitempty"`
-	LocalSkipped []string `json:"local_skipped,omitempty"`
+	Acquisitions int           `json:"acquisitions"`
+	Fetches      []FetchEvent  `json:"fetches,omitempty"`
+	Skills       []SkillAction `json:"skills,omitempty"`
+	Changes      []Change      `json:"changes,omitempty"`
+	LocalSkipped []string      `json:"local_skipped,omitempty"`
+}
+
+type FetchEvent struct {
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+	Commit string `json:"commit,omitempty"`
+}
+
+type SkillAction struct {
+	Name   string `json:"name"`
+	Action string `json:"action"`
 }
 
 type Change struct {
@@ -52,10 +65,11 @@ func (engine *Engine) Sync(ctx context.Context) (Result, error) {
 		return Result{Acquisitions: git.Acquisitions()}, err
 	}
 	newLock := lockFromResolved(resolved)
-	if err := engine.apply(ctx, manifest, oldLock, newLock, resolved); err != nil {
-		return Result{Acquisitions: git.Acquisitions()}, err
+	actions, err := engine.apply(ctx, manifest, oldLock, newLock, resolved)
+	if err != nil {
+		return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions}, err
 	}
-	return Result{Acquisitions: git.Acquisitions()}, nil
+	return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions}, nil
 }
 
 func (engine *Engine) Update(ctx context.Context, selectors []string) (Result, error) {
@@ -75,10 +89,11 @@ func (engine *Engine) Update(ctx context.Context, selectors []string) (Result, e
 	newLock := lockFromResolved(resolved)
 	changes := lockChanges(oldLock, newLock, selected)
 	locals := selectedLocalSources(manifest, selected)
-	if err := engine.apply(ctx, manifest, oldLock, newLock, resolved); err != nil {
-		return Result{Acquisitions: git.Acquisitions(), Changes: changes, LocalSkipped: locals}, err
+	actions, err := engine.apply(ctx, manifest, oldLock, newLock, resolved)
+	if err != nil {
+		return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, err
 	}
-	return Result{Acquisitions: git.Acquisitions(), Changes: changes, LocalSkipped: locals}, nil
+	return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, nil
 }
 
 func (engine *Engine) load() (Manifest, Lock, error) {
@@ -179,7 +194,7 @@ func resolveDiscoveredSource(root string, lockSource LockSource, selected []stri
 	return resolvedSource{lock: lockSource, root: root}, nil
 }
 
-func (engine *Engine) apply(ctx context.Context, manifest Manifest, oldLock, newLock Lock, resolved []resolvedSource) error {
+func (engine *Engine) apply(ctx context.Context, manifest Manifest, oldLock, newLock Lock, resolved []resolvedSource) ([]SkillAction, error) {
 	defer func() {
 		for _, source := range resolved {
 			if source.lock.Kind == SourceGit {
@@ -188,24 +203,43 @@ func (engine *Engine) apply(ctx context.Context, manifest Manifest, oldLock, new
 		}
 	}()
 	installer := newInstaller(engine.options.TargetDir, manifest.Path)
-	return installer.withLock(ctx, func() error {
+	var actions []SkillAction
+	err := installer.withLock(ctx, func() error {
 		for _, source := range resolved {
 			for _, skill := range source.lock.Skills {
 				dir := source.root
 				if skill.Path != "." {
 					dir = filepath.Join(source.root, filepath.FromSlash(skill.Path))
 				}
+				state := installedStatus(installer, engine.options.TargetDir, source.lock.Identity, skill)
 				if err := installer.install(ctx, skill.Name, source.lock.Identity, dir, skill.Hash); err != nil {
 					return fmt.Errorf("install %q: %w", skill.Name, err)
 				}
+				action := "repaired"
+				if state == "missing" {
+					action = "installed"
+				} else if state == "current" {
+					action = "unchanged"
+				}
+				actions = append(actions, SkillAction{Name: skill.Name, Action: action})
 			}
 		}
 		desired := lockSkillNames(newLock)
+		var oldNames []string
 		for name := range lockSkillNames(oldLock) {
-			if _, keep := desired[name]; !keep {
-				if err := installer.prune(name); err != nil {
-					return err
-				}
+			oldNames = append(oldNames, name)
+		}
+		sort.Strings(oldNames)
+		for _, name := range oldNames {
+			if _, keep := desired[name]; keep {
+				continue
+			}
+			_, statErr := os.Lstat(filepath.Join(engine.options.TargetDir, name))
+			if err := installer.prune(name); err != nil {
+				return err
+			}
+			if statErr == nil {
+				actions = append(actions, SkillAction{Name: name, Action: "pruned"})
 			}
 		}
 		encoded, err := EncodeLock(newLock)
@@ -217,6 +251,13 @@ func (engine *Engine) apply(ctx context.Context, manifest Manifest, oldLock, new
 		}
 		return nil
 	})
+	sort.Slice(actions, func(i, j int) bool {
+		if actions[i].Action != actions[j].Action {
+			return actions[i].Action < actions[j].Action
+		}
+		return actions[i].Name < actions[j].Name
+	})
+	return actions, err
 }
 
 func matchingLockSource(lock Lock, source ManifestSource, identity string) *LockSource {

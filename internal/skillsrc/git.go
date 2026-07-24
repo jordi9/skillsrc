@@ -50,6 +50,7 @@ type GitOperation struct {
 	git          string
 	acquired     map[string]*acquiredRepository
 	acquisitions int
+	fetches      []FetchEvent
 	cleaned      bool
 }
 
@@ -61,6 +62,10 @@ func NewGitOperation(cacheDir, gitBinary string) *GitOperation {
 }
 
 func (operation *GitOperation) Acquisitions() int { return operation.acquisitions }
+
+func (operation *GitOperation) Fetches() []FetchEvent {
+	return append([]FetchEvent(nil), operation.fetches...)
+}
 
 func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string, refresh bool, lockedCommit string) (string, error) {
 	repository, err := NormalizeRepository(rawRepo)
@@ -87,6 +92,7 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 		if err := operation.fetchExact(ctx, acquired, lockedCommit); err != nil {
 			return "", fmt.Errorf("fetch locked commit %s from %s: %w", lockedCommit, rawRepo, err)
 		}
+		operation.fetches = append(operation.fetches, FetchEvent{Source: rawRepo, Reason: "locked commit missing from cache", Commit: lockedCommit})
 		return lockedCommit, nil
 	}
 
@@ -94,10 +100,16 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 		if err := operation.fetchExact(ctx, acquired, ref); err != nil {
 			return "", fmt.Errorf("acquire exact commit from %s: %w", rawRepo, err)
 		}
+		operation.fetches = append(operation.fetches, FetchEvent{Source: rawRepo, Reason: "exact configured commit missing from cache", Commit: ref})
 	} else if !isCommitID(ref) && !acquired.fetched {
 		if err := operation.fetchAll(ctx, acquired); err != nil {
 			return "", fmt.Errorf("acquire %s: %w", rawRepo, err)
 		}
+		reason := "new or changed declaration"
+		if lockedCommit != "" {
+			reason = "update configured ref"
+		}
+		operation.fetches = append(operation.fetches, FetchEvent{Source: rawRepo, Reason: reason})
 	}
 	commit, err := operation.resolveFetched(ctx, acquired.dir, ref)
 	if err != nil {
