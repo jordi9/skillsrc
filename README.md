@@ -6,7 +6,7 @@
 
 | Item | Default |
 | --- | --- |
-| Manifest | `~/.agents/.skillsrc` |
+| Manifest | `~/.agents/skills.toml` |
 | Lockfile | `skills.lock` beside the manifest (`~/.agents/skills.lock`) |
 | Installed skills | `~/.agents/skills` |
 | Git cache | the OS user cache directory plus `skillsrc/repos` (for example, `~/Library/Caches/skillsrc/repos` on macOS) |

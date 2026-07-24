@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDefaultOptionsUseAgentsSkillsrcManifest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	options, err := DefaultOptions()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".agents", "skills.toml"), options.ManifestPath)
+	assert.Equal(t, filepath.Join(home, ".agents", "skills.lock"), options.LockPath)
+	assert.Equal(t, filepath.Join(home, ".agents", "skills"), options.TargetDir)
+}
+
 func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

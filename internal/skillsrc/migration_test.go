@@ -13,7 +13,7 @@ import (
 )
 
 func TestIsolatedMigrationConfiguration(t *testing.T) {
-	fixturePath := filepath.Join("..", "..", "testdata", "migration", ".skillsrc")
+	fixturePath := filepath.Join("..", "..", "testdata", "migration", "skills.toml")
 	fixture, err := LoadManifest(fixturePath)
 	require.NoError(t, err)
 	require.Len(t, fixture.Sources, 5)

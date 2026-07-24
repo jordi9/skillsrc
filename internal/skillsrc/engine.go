@@ -336,7 +336,7 @@ func DefaultOptions() (Options, error) {
 	if err != nil {
 		return Options{}, err
 	}
-	manifest := filepath.Join(home, ".agents", ".skillsrc")
+	manifest := filepath.Join(home, ".agents", "skills.toml")
 	return Options{
 		ManifestPath: manifest,
 		LockPath:     filepath.Join(filepath.Dir(manifest), "skills.lock"),

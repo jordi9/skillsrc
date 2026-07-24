@@ -21,7 +21,7 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 	}
 	global := flag.NewFlagSet("skillsrc", flag.ContinueOnError)
 	global.SetOutput(options.Err)
-	manifest := global.String("manifest", options.ManifestPath, "manifest path (default ~/.agents/.skillsrc)")
+	manifest := global.String("manifest", options.ManifestPath, "manifest path (default ~/.agents/skills.toml)")
 	lock := global.String("lock", "", "lockfile path (default beside manifest)")
 	target := global.String("target", options.TargetDir, "installation target")
 	cache := global.String("cache", options.CacheDir, "repository cache")
@@ -178,7 +178,7 @@ Usage:
   skillsrc [global flags] doctor [--repair] [--json]
 
 Global flags:
-  --manifest PATH  manifest (default ~/.agents/.skillsrc)
+  --manifest PATH  manifest (default ~/.agents/skills.toml)
   --lock PATH      lockfile (default skills.lock beside manifest)
   --target PATH    installation directory (default ~/.agents/skills)
   --cache PATH     Git repository cache (default user cache/skillsrc/repos)`))
