@@ -63,10 +63,10 @@ A working `git` executable is the only runtime dependency.
 go install github.com/jordi9/skillsrc/cmd/skillsrc@latest
 ```
 
-From a checkout:
+From a checkout, with `GOBIN` configured:
 
 ```sh
-go build -o ~/.local/bin/skillsrc ./cmd/skillsrc
+make install
 ```
 
 Release packaging is described in [docs/release-plan.md](docs/release-plan.md).
