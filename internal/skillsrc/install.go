@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -32,26 +33,46 @@ type transaction struct {
 }
 
 type installer struct {
-	target string
-	owner  string
+	target  string
+	lockDir string
+	owner   string
 }
 
 func newInstaller(target, manifestPath string) *installer {
 	absolute, _ := filepath.Abs(manifestPath)
-	digest := sha256String(filepath.Clean(absolute))
-	return &installer{target: target, owner: digest}
+	clean := filepath.Clean(absolute)
+	return &installer{target: target, lockDir: filepath.Dir(clean), owner: sha256String(clean)}
 }
 
 func (installer *installer) withLock(ctx context.Context, operation func() error) error {
-	if err := os.MkdirAll(filepath.Dir(installer.target), 0o755); err != nil {
-		return err
+	targetParent := filepath.Dir(installer.target)
+	for _, directory := range []string{targetParent, installer.lockDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return err
+		}
 	}
-	lockPath := filepath.Join(filepath.Dir(installer.target), ".skillsrc-install.lock")
-	unlock, err := lockFileContext(ctx, lockPath)
-	if err != nil {
-		return err
+	lockPaths := []string{filepath.Join(installer.lockDir, ".skillsrc-install.lock")}
+	targetLock := filepath.Join(targetParent, ".skillsrc-install.lock")
+	if targetLock != lockPaths[0] {
+		lockPaths = append(lockPaths, targetLock)
+		sort.Strings(lockPaths)
 	}
-	defer unlock()
+	var unlocks []func()
+	for _, lockPath := range lockPaths {
+		unlock, err := lockFileContext(ctx, lockPath)
+		if err != nil {
+			for index := len(unlocks) - 1; index >= 0; index-- {
+				unlocks[index]()
+			}
+			return err
+		}
+		unlocks = append(unlocks, unlock)
+	}
+	defer func() {
+		for index := len(unlocks) - 1; index >= 0; index-- {
+			unlocks[index]()
+		}
+	}()
 	if err := os.MkdirAll(installer.target, 0o755); err != nil {
 		return fmt.Errorf("create install target: %w", err)
 	}

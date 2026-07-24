@@ -72,7 +72,11 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 			}
 			printResult(options.Out, "update complete", result)
 		}
-	case "list":
+	case "add":
+		err = runAddCLI(ctx, engine, remaining[1:], options.Out)
+	case "remove", "rm":
+		err = runRemoveCLI(ctx, engine, remaining[1:], options.Out)
+	case "list", "ls":
 		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err)
 	case "doctor":
 		var issues bool
@@ -93,14 +97,18 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 	return 0
 }
 
-func printResult(output io.Writer, label string, result Result) {
-	for _, fetch := range result.Fetches {
+func printFetches(output io.Writer, fetches []FetchEvent) {
+	for _, fetch := range fetches {
 		commit := ""
 		if fetch.Commit != "" {
 			commit = " (" + fetch.Commit + ")"
 		}
 		fmt.Fprintf(output, "fetched %s: %s%s\n", fetch.Source, fetch.Reason, commit)
 	}
+}
+
+func printResult(output io.Writer, label string, result Result) {
+	printFetches(output, result.Fetches)
 	counts := map[string]int{"installed": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
 	names := map[string][]string{}
 	for _, skill := range result.Skills {
@@ -115,6 +123,115 @@ func printResult(output io.Writer, label string, result Result) {
 		}
 	}
 	fmt.Fprintf(output, "%s: %d installed, %d repaired, %d unchanged, %d pruned; %d repositories fetched\n", label, counts["installed"], counts["repaired"], counts["unchanged"], counts["pruned"], len(result.Fetches))
+}
+
+func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Writer) error {
+	parsed, err := parseAddArgs(args)
+	if err != nil {
+		return err
+	}
+	source, err := addSource(engine.options.ManifestPath, parsed.source, parsed.ref)
+	if err != nil {
+		return err
+	}
+	if len(parsed.skills) == 0 && !parsed.all {
+		names, result, err := engine.Discover(ctx, source)
+		if err != nil {
+			return err
+		}
+		printFetches(output, result.Fetches)
+		fmt.Fprintf(output, "Available skills in %s:\n", parsed.source)
+		for _, name := range names {
+			fmt.Fprintf(output, "  %s\n", name)
+		}
+		return nil
+	}
+	_, result, err := engine.Add(ctx, source, parsed.skills, parsed.all)
+	if err != nil {
+		return err
+	}
+	printResult(output, "add complete", result)
+	return nil
+}
+
+type addArguments struct {
+	source string
+	skills []string
+	ref    string
+	all    bool
+	list   bool
+}
+
+func parseAddArgs(args []string) (addArguments, error) {
+	var parsed addArguments
+	var positional []string
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		switch {
+		case argument == "--all":
+			parsed.all = true
+		case argument == "--list":
+			parsed.list = true
+		case argument == "--ref":
+			index++
+			if index >= len(args) {
+				return parsed, errors.New("--ref requires a branch, tag, or full commit hash")
+			}
+			parsed.ref = args[index]
+		case strings.HasPrefix(argument, "--ref="):
+			parsed.ref = strings.TrimPrefix(argument, "--ref=")
+		case strings.HasPrefix(argument, "-"):
+			return parsed, fmt.Errorf("unknown add option %q", argument)
+		default:
+			positional = append(positional, argument)
+		}
+	}
+	if len(positional) == 0 {
+		return parsed, errors.New("add requires a source; optionally followed by skill names")
+	}
+	parsed.source, parsed.skills = positional[0], positional[1:]
+	if parsed.all && len(parsed.skills) > 0 {
+		return parsed, errors.New("--all cannot be combined with skill names")
+	}
+	if parsed.list && (parsed.all || len(parsed.skills) > 0) {
+		return parsed, errors.New("--list cannot be combined with --all or skill names")
+	}
+	return parsed, nil
+}
+
+func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("remove requires at least one skill name")
+	}
+	result, err := engine.Remove(ctx, args)
+	if err != nil {
+		return err
+	}
+	printResult(output, "remove complete", result)
+	return nil
+}
+
+func addSource(manifestPath, input, ref string) (ManifestSource, error) {
+	isLocal := filepath.IsAbs(input) || input == "." || input == ".." || input == "~" || strings.HasPrefix(input, "./") || strings.HasPrefix(input, "../") || strings.HasPrefix(input, "~/")
+	if !isLocal {
+		return ManifestSource{Repo: input, Ref: ref}, nil
+	}
+	if ref != "" {
+		return ManifestSource{}, &ValidationError{Problem: "local source cannot set ref"}
+	}
+	resolved, err := resolveLocalPath(".", input)
+	if err != nil {
+		return ManifestSource{}, err
+	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		return ManifestSource{}, err
+	}
+	stored, err := filepath.Rel(filepath.Dir(manifestPath), absolute)
+	if err != nil {
+		stored = absolute
+	}
+	return ManifestSource{Path: filepath.ToSlash(stored), ResolvedPath: absolute}, nil
 }
 
 func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer) error {
@@ -250,6 +367,8 @@ func printUsage(output io.Writer) {
 
 Usage:
   skillsrc [global flags] sync
+  skillsrc [global flags] add SOURCE [SKILL ...] [--all] [--list] [--ref REF]
+  skillsrc [global flags] remove SKILL ...
   skillsrc [global flags] update [source-or-skill ...]
   skillsrc [global flags] list [--json]
   skillsrc [global flags] doctor [--repair] [--json]

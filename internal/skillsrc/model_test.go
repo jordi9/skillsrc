@@ -3,6 +3,7 @@ package skillsrc
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -77,6 +78,81 @@ skills=["one"]
 	}
 	if got := manifest.Sources[0].Path; got != "../local-skills" {
 		t.Fatalf("Path was rewritten to %q", got)
+	}
+}
+
+func TestEncodeManifestIsDeterministicAndReloadable(t *testing.T) {
+	t.Parallel()
+	manifest := Manifest{
+		Version: 1,
+		Path:    "/runtime/manifest",
+		Sources: []ManifestSource{
+			{
+				Repo:         "z/repo",
+				Ref:          "main",
+				Skills:       []string{"zeta", "alpha"},
+				ResolvedPath: "/runtime/git",
+			},
+			{
+				Path:         "../local",
+				Skills:       []string{"gamma", "beta"},
+				ResolvedPath: "/runtime/local",
+			},
+		},
+	}
+	before := Manifest{
+		Version: manifest.Version,
+		Path:    manifest.Path,
+		Sources: append([]ManifestSource(nil), manifest.Sources...),
+	}
+	for i := range before.Sources {
+		before.Sources[i].Skills = append([]string(nil), manifest.Sources[i].Skills...)
+	}
+
+	first, err := EncodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := EncodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("manifest output changed:\n%s\n---\n%s", first, second)
+	}
+	if !reflect.DeepEqual(manifest, before) {
+		t.Fatalf("EncodeManifest mutated input:\ngot:  %#v\nwant: %#v", manifest, before)
+	}
+
+	output := string(first)
+	if strings.Index(output, `repo = "z/repo"`) > strings.Index(output, `path = "../local"`) {
+		t.Fatalf("source declaration order changed:\n%s", output)
+	}
+	if strings.Index(output, `"alpha"`) > strings.Index(output, `"zeta"`) ||
+		strings.Index(output, `"beta"`) > strings.Index(output, `"gamma"`) {
+		t.Fatalf("skills not sorted:\n%s", output)
+	}
+	if strings.Contains(output, manifest.Path) || strings.Contains(output, "/runtime/") || strings.Contains(output, "ResolvedPath") {
+		t.Fatalf("runtime paths encoded:\n%s", output)
+	}
+
+	path := filepath.Join(t.TempDir(), ".skillsrc")
+	writeTestFile(t, path, output)
+	reloaded, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest(encoded manifest): %v\n%s", err, output)
+	}
+	if got, want := reloaded.Sources[0].Repo, "z/repo"; got != want {
+		t.Fatalf("first source repo = %q, want %q", got, want)
+	}
+	if got, want := reloaded.Sources[0].Skills, []string{"alpha", "zeta"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first source skills = %v, want %v", got, want)
+	}
+	if got, want := reloaded.Sources[1].Path, "../local"; got != want {
+		t.Fatalf("second source path = %q, want %q", got, want)
+	}
+	if got, want := reloaded.Sources[1].Skills, []string{"beta", "gamma"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("second source skills = %v, want %v", got, want)
 	}
 }
 

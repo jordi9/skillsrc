@@ -22,7 +22,7 @@ version = 1
 
 [[sources]]
 repo = "owner/repository" # also accepts HTTPS and SSH Git URLs
-ref = "main"              # optional branch, tag, or exact commit
+ref = "main"              # optional branch, tag, or full 40-character commit hash
 skills = ["one", "two"]
 
 [[sources]]
@@ -37,15 +37,24 @@ Discovery is bounded to a repository root containing `SKILL.md`, immediate child
 ## Commands
 
 ```sh
+skillsrc add SOURCE                         # list discovered skills
+skillsrc add SOURCE SKILL...                # add selected skills and sync
+skillsrc add SOURCE --all                   # add every discovered skill and sync
+skillsrc add SOURCE SKILL... --ref REF      # branch, tag, or full commit hash
+skillsrc remove SKILL...                    # remove declarations and sync
 skillsrc sync
 skillsrc update [source-or-skill ...]
 skillsrc list [--json]
 skillsrc doctor [--repair] [--json]
 ```
 
+`add` accepts GitHub shorthand, HTTPS or SSH Git URLs, and local paths beginning with `./`, `../`, `/`, or `~`. With no skill names, it only lists what the source contains. `--list` makes that intent explicit. Added skills are validated before the manifest changes; `--all` cannot be combined with names.
+
+`remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by this manifest. It does not update the remaining Git sources.
+
 `sync` reproduces locked Git commits, creates missing lock entries, refreshes local content, installs the declared set, and prunes no-longer-declared managed skills. It does not advance an existing Git lock.
 
-`update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, then performs a sync. Local sources have no remote version; exact commit refs remain exact.
+`update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, then performs a sync. Local sources have no remote version; full commit refs remain exact.
 
 See [docs/lockfile.md](docs/lockfile.md) for the generated lock format.
 

@@ -188,6 +188,20 @@ func ValidateLock(lock Lock) error {
 	return nil
 }
 
+func EncodeManifest(manifest Manifest) ([]byte, error) {
+	stable := manifest
+	stable.Sources = append([]ManifestSource(nil), manifest.Sources...)
+	for i := range stable.Sources {
+		stable.Sources[i].Skills = append([]string(nil), stable.Sources[i].Skills...)
+		sort.Strings(stable.Sources[i].Skills)
+	}
+	var buffer bytes.Buffer
+	if err := toml.NewEncoder(&buffer).Encode(stable); err != nil {
+		return nil, fmt.Errorf("encode manifest: %w", err)
+	}
+	return buffer.Bytes(), nil
+}
+
 func EncodeLock(lock Lock) ([]byte, error) {
 	stable := lock
 	stable.Sources = append([]LockSource(nil), lock.Sources...)
