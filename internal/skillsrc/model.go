@@ -171,8 +171,13 @@ func ValidateLock(lock Lock) error {
 			return &ValidationError{Problem: fmt.Sprintf("lock local source %d has inconsistent fields", i+1)}
 		}
 		for _, skill := range source.Skills {
-			if !skillNamePattern.MatchString(skill.Name) || skill.Path == "" || skill.Hash == "" {
+			if !skillNamePattern.MatchString(skill.Name) || skill.Path == "" || !strings.HasPrefix(skill.Hash, "sha256:") {
 				return &ValidationError{Problem: fmt.Sprintf("invalid locked skill %q", skill.Name)}
+			}
+			if skill.Path != "." {
+				if err := ValidateRelativeSkillPath(skill.Path); err != nil {
+					return err
+				}
 			}
 			if _, ok := seen[skill.Name]; ok {
 				return &ValidationError{Problem: fmt.Sprintf("duplicate locked skill %q", skill.Name)}
@@ -192,7 +197,10 @@ func EncodeLock(lock Lock) ([]byte, error) {
 			return stable.Sources[i].Skills[a].Name < stable.Sources[i].Skills[b].Name
 		})
 	}
-	sort.Slice(stable.Sources, func(i, j int) bool { return stable.Sources[i].Identity < stable.Sources[j].Identity })
+	sort.Slice(stable.Sources, func(i, j int) bool {
+		left, right := stable.Sources[i], stable.Sources[j]
+		return left.Identity+"\x00"+left.Ref+"\x00"+left.Repo+"\x00"+left.Path < right.Identity+"\x00"+right.Ref+"\x00"+right.Repo+"\x00"+right.Path
+	})
 	var buffer bytes.Buffer
 	if err := toml.NewEncoder(&buffer).Encode(stable); err != nil {
 		return nil, fmt.Errorf("encode lock: %w", err)

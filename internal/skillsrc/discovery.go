@@ -26,12 +26,12 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve source root: %w", err)
 	}
-	info, err := os.Stat(root)
+	info, err := os.Lstat(root)
 	if err != nil {
 		return nil, fmt.Errorf("read source root %q: %w", root, err)
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("source root %q is not a directory", root)
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("source root %q is not a real directory", root)
 	}
 
 	candidates := make([]string, 0)
@@ -60,6 +60,9 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 
 	found := make(map[string]DiscoveredSkill)
 	for _, candidate := range candidates {
+		if err := ensureNoSymlinkPath(root, candidate); err != nil {
+			return nil, err
+		}
 		if _, err := HashSkill(candidate); err != nil {
 			return nil, fmt.Errorf("validate discovered skill %q: %w", candidate, err)
 		}
@@ -83,6 +86,28 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 		found[name] = DiscoveredSkill{Name: name, Path: filepath.ToSlash(relative)}
 	}
 	return found, nil
+}
+
+func ensureNoSymlinkPath(root, path string) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return &ValidationError{Problem: fmt.Sprintf("symlink path %q is not allowed", current)}
+		}
+	}
+	return nil
 }
 
 func isRegularFile(path string) bool {

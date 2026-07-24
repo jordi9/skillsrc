@@ -89,7 +89,11 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 		return lockedCommit, nil
 	}
 
-	if !acquired.fetched {
+	if isCommitID(ref) && !operation.hasCommit(ctx, acquired.dir, ref) {
+		if err := operation.fetchExact(ctx, acquired, ref); err != nil {
+			return "", fmt.Errorf("acquire exact commit from %s: %w", rawRepo, err)
+		}
+	} else if !isCommitID(ref) && !acquired.fetched {
 		if err := operation.fetchAll(ctx, acquired); err != nil {
 			return "", fmt.Errorf("acquire %s: %w", rawRepo, err)
 		}
@@ -378,6 +382,8 @@ func extractTar(ctx context.Context, reader io.Reader, destination string) error
 		seen[name] = struct{}{}
 		path := filepath.Join(destination, name)
 		switch header.Typeflag {
+		case tar.TypeXHeader, tar.TypeXGlobalHeader:
+			continue
 		case tar.TypeDir:
 			if err := os.MkdirAll(path, os.FileMode(header.Mode)&0o755); err != nil {
 				return fmt.Errorf("create archive directory %q: %w", path, err)
