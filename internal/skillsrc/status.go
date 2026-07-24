@@ -136,11 +136,28 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 	if err != nil {
 		return DoctorReport{}, err
 	}
-	report := DoctorReport{}
+	report := DoctorReport{Issues: []DoctorIssue{}}
 	declared := make(map[string]struct{})
 	for _, source := range manifest.Sources {
 		for _, name := range source.Skills {
 			declared[name] = struct{}{}
+		}
+	}
+	for _, source := range manifest.Sources {
+		if source.Path == "" {
+			continue
+		}
+		current, resolveErr := resolveLocalSource(source)
+		if resolveErr != nil {
+			report.Issues = append(report.Issues, DoctorIssue{Kind: "source", Message: fmt.Sprintf("local source %s is invalid: %v", source.Path, resolveErr)})
+			continue
+		}
+		identity := LocalIdentity(localIdentityPath(source.Path))
+		for _, skill := range current.lock.Skills {
+			locked := findLockedSkill(lock, SourceLocal, identity, source, skill.Name)
+			if locked != nil && (locked.skill.Path != skill.Path || locked.skill.Hash != skill.Hash) {
+				report.Issues = append(report.Issues, DoctorIssue{Kind: "source", Skill: skill.Name, Message: "local source content differs from lock"})
+			}
 		}
 	}
 	for _, status := range statuses {
@@ -164,6 +181,15 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 				continue
 			}
 			operation := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
+			repository, normalizeErr := NormalizeRepository(source.Repo)
+			valid := false
+			if normalizeErr == nil {
+				valid, _ = operation.validBareRepository(ctx, dir, repository.URL)
+			}
+			if !valid {
+				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache is invalid for %s", source.Identity)})
+				continue
+			}
 			if !operation.hasCommit(ctx, dir, source.Commit) {
 				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache for %s lacks commit %s", source.Identity, source.Commit)})
 			}
@@ -173,6 +199,14 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 		for _, entry := range entries {
 			if strings.HasPrefix(entry.Name(), ".repo-init-") || strings.Contains(entry.Name(), ".corrupt-") {
 				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: "interrupted cache artifact " + entry.Name()})
+			}
+		}
+	}
+	if entries, err := os.ReadDir(engine.options.TargetDir); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.Contains(name, ".skillsrc-tmp-") || strings.Contains(name, ".skillsrc-old-") || strings.Contains(name, ".skillsrc-prune-") || strings.HasSuffix(name, ".skillsrc-txn.json") {
+				report.Issues = append(report.Issues, DoctorIssue{Kind: "install", Message: "interrupted install artifact " + name})
 			}
 		}
 	}

@@ -28,6 +28,42 @@ func TestSyncRejectsSkillSymlinkWithoutInstalling(t *testing.T) {
 	assert.NoFileExists(t, options.LockPath)
 }
 
+func TestSyncDereferencesSafeInternalFileSymlink(t *testing.T) {
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	skill := filepath.Join(local, "one")
+	makeSkill(t, skill, "one", "safe")
+	writeTestFile(t, filepath.Join(skill, "AGENTS.md"), "instructions")
+	require.NoError(t, os.Symlink("AGENTS.md", filepath.Join(skill, "CLAUDE.md")))
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	installed := filepath.Join(options.TargetDir, "one", "CLAUDE.md")
+	info, err := os.Lstat(installed)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode()&os.ModeSymlink)
+	content, err := os.ReadFile(installed)
+	require.NoError(t, err)
+	assert.Equal(t, "instructions", string(content))
+}
+
+func TestSyncRejectsSymlinkedLocalSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	realSource := filepath.Join(root, "real")
+	makeSkill(t, filepath.Join(realSource, "one"), "one", "safe")
+	require.NoError(t, os.Symlink(realSource, filepath.Join(root, "linked")))
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./linked\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+
+	_, err := NewEngine(options).Sync(context.Background())
+	require.ErrorContains(t, err, "not a real directory")
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "one"))
+}
+
 func TestSyncRefusesToPruneFormerlyManagedSkillWithoutOwnershipMarker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -46,6 +82,43 @@ func TestSyncRefusesToPruneFormerlyManagedSkillWithoutOwnershipMarker(t *testing
 	content, readErr := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
 	require.NoError(t, readErr)
 	assert.Contains(t, string(content), "preserve")
+}
+
+func TestInstallerRejectsEscapingTransactionPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := filepath.Join(root, "skills")
+	victim := filepath.Join(root, "victim")
+	writeTestFile(t, filepath.Join(victim, "keep"), "preserve")
+	require.NoError(t, os.MkdirAll(target, 0o755))
+	journal := transaction{Version: SchemaVersion, Action: "prune", Skill: "one", Backup: "../victim"}
+	require.NoError(t, writeJSONAtomic(filepath.Join(target, ".one.skillsrc-txn.json"), journal))
+	installer := newInstaller(target, filepath.Join(root, ".skillsrc"))
+
+	err := installer.withLock(context.Background(), func() error { return nil })
+	require.ErrorContains(t, err, "invalid transaction paths")
+	assert.FileExists(t, filepath.Join(victim, "keep"))
+}
+
+func TestGeneratedArtifactParsesSkillNamesContainingMarkerText(t *testing.T) {
+	t.Parallel()
+	name := ".foo.skillsrc-tmp-bar.skillsrc-tmp-123"
+	skill, ok := generatedArtifact(name, "tmp")
+	assert.True(t, ok)
+	assert.Equal(t, "foo.skillsrc-tmp-bar", skill)
+}
+
+func TestInstallerPreservesUnownedArtifactLikeDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := filepath.Join(root, "skills")
+	artifact := filepath.Join(target, ".foo.skillsrc-tmp-user")
+	writeTestFile(t, filepath.Join(artifact, "keep"), "preserve")
+	installer := newInstaller(target, filepath.Join(root, ".skillsrc"))
+
+	err := installer.withLock(context.Background(), func() error { return nil })
+	require.ErrorContains(t, err, "requires inspection")
+	assert.FileExists(t, filepath.Join(artifact, "keep"))
 }
 
 func TestInstallerRecoversInterruptedReplacement(t *testing.T) {

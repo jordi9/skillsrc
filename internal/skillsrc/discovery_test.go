@@ -12,6 +12,8 @@ func TestDiscoverSkillsUsesOnlyConventionalLocations(t *testing.T) {
 	root := t.TempDir()
 	makeSkill(t, filepath.Join(root, "direct"), "direct", "one")
 	makeSkill(t, filepath.Join(root, "skills", "nested"), "nested", "two")
+	makeSkill(t, filepath.Join(root, "skills", "category", "categorized"), "categorized", "two levels")
+	makeSkill(t, filepath.Join(root, "skills", "category", "too", "deep"), "deep", "ignored")
 	makeSkill(t, filepath.Join(root, ".agents", "skills", "agent"), "agent", "three")
 	makeSkill(t, filepath.Join(root, ".claude", "skills", "claude"), "claude", "four")
 	makeSkill(t, filepath.Join(root, "deep", "ignored", "skill"), "ignored", "no")
@@ -20,13 +22,16 @@ func TestDiscoverSkillsUsesOnlyConventionalLocations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"direct", "nested", "agent", "claude"} {
+	for _, name := range []string{"direct", "nested", "categorized", "agent", "claude"} {
 		if _, ok := found[name]; !ok {
 			t.Errorf("skill %q not discovered: %#v", name, found)
 		}
 	}
 	if _, ok := found["ignored"]; ok {
 		t.Fatalf("unrestricted recursive skill was discovered: %#v", found)
+	}
+	if _, ok := found["deep"]; ok {
+		t.Fatalf("skill below bounded category depth was discovered: %#v", found)
 	}
 }
 

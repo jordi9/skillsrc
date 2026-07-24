@@ -50,6 +50,7 @@ type GitOperation struct {
 	git          string
 	acquired     map[string]*acquiredRepository
 	acquisitions int
+	cleaned      bool
 }
 
 func NewGitOperation(cacheDir, gitBinary string) *GitOperation {
@@ -140,6 +141,9 @@ func (operation *GitOperation) Materialize(ctx context.Context, rawRepo, commit,
 		return fmt.Errorf("start git archive: %w", err)
 	}
 	extractErr := extractTar(ctx, stdout, destination)
+	if extractErr != nil {
+		_ = stdout.Close() // unblock git if validation stopped before consuming the archive
+	}
 	waitErr := command.Wait()
 	if extractErr != nil {
 		return extractErr
@@ -203,6 +207,20 @@ func (operation *GitOperation) repository(ctx context.Context, repository Reposi
 	}
 	if err := os.MkdirAll(operation.cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create repository cache: %w", err)
+	}
+	if !operation.cleaned {
+		entries, err := os.ReadDir(operation.cacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("inspect repository cache: %w", err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".repo-init-") || strings.Contains(entry.Name(), ".corrupt-") {
+				if err := os.RemoveAll(filepath.Join(operation.cacheDir, entry.Name())); err != nil {
+					return nil, fmt.Errorf("clean interrupted cache initialization %q: %w", entry.Name(), err)
+				}
+			}
+		}
+		operation.cleaned = true
 	}
 	key := sha256.Sum256([]byte(repository.Identity))
 	dir := filepath.Join(operation.cacheDir, hex.EncodeToString(key[:]))
@@ -361,12 +379,22 @@ func (operation *GitOperation) lock(ctx context.Context) (func(), error) {
 func extractTar(ctx context.Context, reader io.Reader, destination string) error {
 	archive := tar.NewReader(reader)
 	seen := make(map[string]struct{})
+	type archivedSymlink struct{ path, target string }
+	var symlinks []archivedSymlink
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
+			for _, link := range symlinks {
+				if err := os.MkdirAll(filepath.Dir(link.path), 0o755); err != nil {
+					return fmt.Errorf("create archive symlink parent: %w", err)
+				}
+				if err := os.Symlink(link.target, link.path); err != nil {
+					return fmt.Errorf("create archive symlink %q: %w", link.path, err)
+				}
+			}
 			return nil
 		}
 		if err != nil {
@@ -404,6 +432,8 @@ func extractTar(ctx context.Context, reader io.Reader, destination string) error
 			if closeErr != nil {
 				return fmt.Errorf("close archive file %q: %w", path, closeErr)
 			}
+		case tar.TypeSymlink:
+			symlinks = append(symlinks, archivedSymlink{path: path, target: header.Linkname})
 		default:
 			return &ValidationError{Problem: fmt.Sprintf("Git archive path %q has unsupported type", header.Name)}
 		}

@@ -39,6 +39,25 @@ func TestListReportsCurrentMissingDriftedAndCollision(t *testing.T) {
 	assert.Equal(t, "collision", got["collision"])
 }
 
+func TestDoctorReportsChangedLocalSourceBeforeSync(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "first")
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	makeSkill(t, filepath.Join(local, "one"), "one", "second")
+
+	report, err := NewEngine(options).Doctor(context.Background(), false)
+	require.NoError(t, err)
+	require.Len(t, report.Issues, 1)
+	assert.Equal(t, "source", report.Issues[0].Kind)
+	assert.Equal(t, "one", report.Issues[0].Skill)
+}
+
 func TestDoctorReportsWithoutRepairAndRepairsOnlyWhenAsked(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

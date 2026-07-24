@@ -210,8 +210,19 @@ func (installer *installer) recoverTransactions() error {
 			return fmt.Errorf("read transaction journal %q: %w", path, err)
 		}
 		var journal transaction
-		if err := json.Unmarshal(data, &journal); err != nil || journal.Version != SchemaVersion || !skillNamePattern.MatchString(journal.Skill) {
+		if err := json.Unmarshal(data, &journal); err != nil || journal.Version != SchemaVersion || !skillNamePattern.MatchString(journal.Skill) || entry.Name() != "."+journal.Skill+".skillsrc-txn.json" {
 			return fmt.Errorf("invalid transaction journal %q", path)
+		}
+		if journal.Action == "replace" {
+			if !generatedForSkill(journal.Temp, journal.Skill, "tmp") || !generatedForSkill(journal.Backup, journal.Skill, "old") {
+				return fmt.Errorf("invalid transaction paths in %q", path)
+			}
+		} else if journal.Action == "prune" {
+			if journal.Temp != "" || !generatedForSkill(journal.Backup, journal.Skill, "prune") {
+				return fmt.Errorf("invalid transaction paths in %q", path)
+			}
+		} else {
+			return fmt.Errorf("invalid transaction action in %q", path)
 		}
 		destination := filepath.Join(installer.target, journal.Skill)
 		temporary := filepath.Join(installer.target, journal.Temp)
@@ -224,9 +235,6 @@ func (installer *installer) recoverTransactions() error {
 			_ = os.RemoveAll(backup)
 			_ = os.Remove(path)
 			continue
-		}
-		if journal.Action != "replace" {
-			return fmt.Errorf("invalid transaction action in %q", path)
 		}
 		if destinationErr == nil {
 			_ = os.RemoveAll(temporary)
@@ -251,7 +259,48 @@ func (installer *installer) recoverTransactions() error {
 		}
 		return fmt.Errorf("cannot recover transaction for %q", journal.Skill)
 	}
+	entries, err = os.ReadDir(installer.target)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(installer.target, name)
+		if skill, ok := generatedArtifact(name, "tmp"); ok {
+			managed, markerErr := installer.managed(path, skill)
+			if markerErr != nil || !managed {
+				return fmt.Errorf("orphan staging directory requires inspection: %q", path)
+			}
+			if err := os.RemoveAll(path); err != nil {
+				return fmt.Errorf("clean orphan staging directory %q: %w", path, err)
+			}
+		}
+		if _, ok := generatedArtifact(name, "old"); ok {
+			return fmt.Errorf("orphan install backup requires inspection: %q", path)
+		}
+		if _, ok := generatedArtifact(name, "prune"); ok {
+			return fmt.Errorf("orphan install backup requires inspection: %q", path)
+		}
+	}
 	return syncDirectory(installer.target)
+}
+
+func generatedForSkill(name, skill, kind string) bool {
+	prefix := "." + skill + ".skillsrc-" + kind + "-"
+	return filepath.Base(name) == name && strings.HasPrefix(name, prefix) && len(name) > len(prefix)
+}
+
+func generatedArtifact(name, kind string) (string, bool) {
+	if !strings.HasPrefix(name, ".") {
+		return "", false
+	}
+	marker := ".skillsrc-" + kind + "-"
+	index := strings.LastIndex(name[1:], marker)
+	if index <= 0 {
+		return "", false
+	}
+	skill := name[1 : index+1]
+	return skill, skillNamePattern.MatchString(skill) && generatedForSkill(name, skill, kind)
 }
 
 func copySkill(ctx context.Context, source, destination string) error {
@@ -262,9 +311,6 @@ func copySkill(ctx context.Context, source, destination string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return &ValidationError{Problem: fmt.Sprintf("symlink %q is not allowed", path)}
-		}
 		relative, err := filepath.Rel(source, path)
 		if err != nil {
 			return err
@@ -273,17 +319,18 @@ func copySkill(ctx context.Context, source, destination string) error {
 			return &ValidationError{Problem: fmt.Sprintf("source contains reserved ownership file %q", ownershipFile)}
 		}
 		target := filepath.Join(destination, relative)
-		info, err := entry.Info()
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			return os.MkdirAll(target, info.Mode().Perm()&0o777)
+		}
+		resolved, info, err := safeFilePath(source, path)
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm()&0o777)
-		}
-		if !entry.Type().IsRegular() {
-			return &ValidationError{Problem: fmt.Sprintf("non-regular file %q is not allowed", path)}
-		}
-		input, err := os.Open(path)
+		input, err := os.Open(resolved)
 		if err != nil {
 			return err
 		}

@@ -54,6 +54,20 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 			candidate := filepath.Join(dir, entry.Name())
 			if isRegularFile(filepath.Join(candidate, "SKILL.md")) {
 				candidates = append(candidates, candidate)
+				continue
+			}
+			// Some skill repositories group skills by one category below skills/*.
+			if parent == "skills" {
+				children, childErr := os.ReadDir(candidate)
+				if childErr != nil {
+					return nil, fmt.Errorf("scan skill category %q: %w", candidate, childErr)
+				}
+				for _, child := range children {
+					childCandidate := filepath.Join(candidate, child.Name())
+					if child.IsDir() && isRegularFile(filepath.Join(childCandidate, "SKILL.md")) {
+						candidates = append(candidates, childCandidate)
+					}
+				}
 			}
 		}
 	}
@@ -175,13 +189,14 @@ func HashSkill(dir string) (string, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return &ValidationError{Problem: fmt.Sprintf("symlink %q is not allowed", path)}
-		}
 		if entry.IsDir() {
 			return nil
 		}
-		if !entry.Type().IsRegular() {
+		if entry.Type()&os.ModeSymlink != 0 {
+			if _, _, err := safeFilePath(dir, path); err != nil {
+				return err
+			}
+		} else if !entry.Type().IsRegular() {
 			return &ValidationError{Problem: fmt.Sprintf("non-regular file %q is not allowed", path)}
 		}
 		relative, relErr := filepath.Rel(dir, path)
@@ -200,13 +215,13 @@ func HashSkill(dir string) (string, error) {
 	digest := sha256.New()
 	for _, relative := range files {
 		path := filepath.Join(dir, relative)
-		info, err := os.Lstat(path)
+		resolved, info, err := safeFilePath(dir, path)
 		if err != nil {
-			return "", fmt.Errorf("read %q: %w", path, err)
+			return "", err
 		}
 		writeHashField(digest, filepath.ToSlash(relative))
 		writeHashField(digest, strconv.FormatUint(uint64(info.Mode().Perm()), 8))
-		file, err := os.Open(path)
+		file, err := os.Open(resolved)
 		if err != nil {
 			return "", fmt.Errorf("open %q: %w", path, err)
 		}
@@ -220,6 +235,43 @@ func HashSkill(dir string) (string, error) {
 		}
 	}
 	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func safeFilePath(root, path string) (string, os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("read %q: %w", path, err)
+	}
+	resolved := path
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", nil, fmt.Errorf("read symlink %q: %w", path, err)
+		}
+		if filepath.IsAbs(target) {
+			return "", nil, &ValidationError{Problem: fmt.Sprintf("symlink %q has absolute target", path)}
+		}
+		resolved, err = filepath.EvalSymlinks(filepath.Join(filepath.Dir(path), target))
+		if err != nil {
+			return "", nil, &ValidationError{Problem: fmt.Sprintf("symlink %q cannot be resolved safely: %v", path, err)}
+		}
+		canonicalRoot, rootErr := filepath.EvalSymlinks(root)
+		if rootErr != nil {
+			return "", nil, fmt.Errorf("resolve skill root %q: %w", root, rootErr)
+		}
+		relative, err := filepath.Rel(canonicalRoot, resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", nil, &ValidationError{Problem: fmt.Sprintf("symlink %q escapes skill root", path)}
+		}
+		info, err = os.Stat(resolved)
+		if err != nil {
+			return "", nil, fmt.Errorf("read symlink target %q: %w", resolved, err)
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, &ValidationError{Problem: fmt.Sprintf("path %q does not resolve to a regular file", path)}
+	}
+	return resolved, info, nil
 }
 
 func writeHashField(digest hash.Hash, value string) {
