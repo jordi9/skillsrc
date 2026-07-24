@@ -137,18 +137,71 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 		return encoder.Encode(statuses)
 	}
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "SKILL\tSOURCE\tREF\tCOMMIT\tSTATUS")
+	fmt.Fprintln(writer, "SKILL\tSOURCE\tREVISION\tSTATE")
+	counts := make(map[string]int)
 	for _, status := range statuses {
-		ref, commit := status.ConfiguredRef, status.LockedCommit
-		if ref == "" {
-			ref = "(default/local)"
-		}
-		if commit == "" {
-			commit = "-"
-		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", status.Name, status.Source, ref, commit, status.Status)
+		counts[status.Status]++
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source), displayRevision(status), displayState(status.Status))
 	}
+	fmt.Fprintln(writer)
+	fmt.Fprintf(writer, "%d skills", len(statuses))
+	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked"} {
+		if counts[state] == 0 {
+			continue
+		}
+		label := state
+		if state == "current" {
+			label = "synced with skills.lock"
+		} else if state == "drifted" {
+			label = "modified"
+		} else if state == "collision" {
+			label = "blocked"
+		}
+		fmt.Fprintf(writer, "  ·  %d %s", counts[state], label)
+	}
+	fmt.Fprintln(writer)
 	return writer.Flush()
+}
+
+func displaySource(source string) string {
+	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "https://github.com/"} {
+		if strings.HasPrefix(source, prefix) {
+			return strings.TrimSuffix(strings.TrimPrefix(source, prefix), ".git")
+		}
+	}
+	return source
+}
+
+func displayRevision(status SkillStatus) string {
+	if status.LockedCommit == "" {
+		if status.Status == "unlocked" && status.ConfiguredRef != "" {
+			return status.ConfiguredRef
+		}
+		return "local"
+	}
+	commit := status.LockedCommit
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	if status.ConfiguredRef != "" {
+		return status.ConfiguredRef + " @ " + commit
+	}
+	return commit
+}
+
+func displayState(state string) string {
+	switch state {
+	case "current":
+		return "✓ synced"
+	case "drifted":
+		return "! modified"
+	case "collision":
+		return "! blocked"
+	case "missing":
+		return "✗ missing"
+	default:
+		return "? " + state
+	}
 }
 
 func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer) (bool, error) {

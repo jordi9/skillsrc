@@ -70,6 +70,16 @@ func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
 	assert.Contains(t, output.String(), "1 repositories fetched")
 }
 
+func TestListDisplayIsCompact(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "jordi9/skills", displaySource("git@github.com:jordi9/skills"))
+	assert.Equal(t, "owner/repo", displaySource("https://github.com/owner/repo.git"))
+	assert.Equal(t, "main @ 0123456789ab", displayRevision(SkillStatus{ConfiguredRef: "main", LockedCommit: "0123456789abcdef", Status: "current"}))
+	assert.Equal(t, "local", displayRevision(SkillStatus{Status: "current"}))
+	assert.Equal(t, "✓ synced", displayState("current"))
+	assert.Equal(t, "! modified", displayState("drifted"))
+}
+
 func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
