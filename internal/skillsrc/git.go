@@ -39,6 +39,12 @@ func (e *GitError) Error() string {
 
 func (e *GitError) Unwrap() error { return e.Err }
 
+type GitRevision struct {
+	Commit string
+	Date   string
+	Tag    string
+}
+
 type acquiredRepository struct {
 	dir     string
 	fetched bool
@@ -115,6 +121,34 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 		return "", fmt.Errorf("pin commit %s: %w", commit, err)
 	}
 	return commit, nil
+}
+
+func (operation *GitOperation) Revision(ctx context.Context, rawRepo, commit string) (GitRevision, error) {
+	if err := validateCommitID(commit); err != nil {
+		return GitRevision{}, err
+	}
+	repository, err := NormalizeRepository(rawRepo)
+	if err != nil {
+		return GitRevision{}, err
+	}
+	unlock, err := operation.lock(ctx)
+	if err != nil {
+		return GitRevision{}, err
+	}
+	defer unlock()
+	acquired, err := operation.repository(ctx, repository)
+	if err != nil {
+		return GitRevision{}, err
+	}
+	date, err := operation.run(ctx, "--git-dir="+acquired.dir, "show", "-s", "--format=%cs", commit)
+	if err != nil {
+		return GitRevision{}, fmt.Errorf("read commit metadata for %s: %w", commit, err)
+	}
+	revision := GitRevision{Commit: commit, Date: strings.TrimSpace(date)}
+	if tag, tagErr := operation.run(ctx, "--git-dir="+acquired.dir, "describe", "--tags", "--exact-match", commit); tagErr == nil {
+		revision.Tag = strings.TrimSpace(tag)
+	}
+	return revision, nil
 }
 
 func (operation *GitOperation) Materialize(ctx context.Context, rawRepo, commit, destination string) error {

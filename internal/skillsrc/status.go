@@ -41,7 +41,7 @@ func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	installer := newInstaller(engine.options.TargetDir, manifest.Path)
+	installer := engine.newInstaller()
 	statuses := make([]SkillStatus, 0)
 	for _, source := range manifest.Sources {
 		sourceDisplay := source.Path
@@ -63,7 +63,7 @@ func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
 				status.LockedCommit = locked.source.Commit
 				status.LockedHash = locked.skill.Hash
 				status.ResolvedPath = locked.skill.Path
-				status.Status = installedStatus(installer, engine.options.TargetDir, identity, *locked.skill)
+				status.Status = installedStatus(installer, engine.options.TargetDir, *locked.skill)
 			}
 			statuses = append(statuses, status)
 		}
@@ -98,7 +98,7 @@ func findLockedSkill(lock Lock, kind SourceKind, identity string, manifestSource
 	return nil
 }
 
-func installedStatus(installer *installer, target, identity string, skill LockedSkill) string {
+func installedStatus(installer *installer, target string, skill LockedSkill) string {
 	dir := filepath.Join(target, skill.Name)
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -116,7 +116,7 @@ func installedStatus(installer *installer, target, identity string, skill Locked
 		return "collision"
 	}
 	hash, err := HashSkill(dir)
-	if err != nil || hash != skill.Hash || marker.Hash != skill.Hash || marker.Source != identity {
+	if err != nil || hash != skill.Hash {
 		return "drifted"
 	}
 	return "current"
@@ -126,6 +126,11 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 	if repair {
 		if _, err := engine.Sync(ctx); err != nil {
 			return DoctorReport{}, fmt.Errorf("repair: %w", err)
+		}
+		if engine.options.ProjectRoot != "" {
+			if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
+				return DoctorReport{}, fmt.Errorf("repair project metadata: %w", err)
+			}
 		}
 	}
 	manifest, lock, err := engine.load()
@@ -209,6 +214,13 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 				report.Issues = append(report.Issues, DoctorIssue{Kind: "install", Message: "interrupted install artifact " + name})
 			}
 		}
+	}
+	if engine.options.ProjectRoot != "" {
+		projectIssues, err := CheckProjectFiles(engine.options.ProjectRoot, lock)
+		if err != nil {
+			return DoctorReport{}, err
+		}
+		report.Issues = append(report.Issues, projectIssues...)
 	}
 	sort.Slice(report.Issues, func(i, j int) bool {
 		if report.Issues[i].Kind != report.Issues[j].Kind {

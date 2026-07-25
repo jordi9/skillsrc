@@ -64,6 +64,28 @@ func TestSyncRejectsSymlinkedLocalSourceRoot(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(options.TargetDir, "one"))
 }
 
+func TestSyncWritesOnlyOwnershipToManagedMarker(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "safe")
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	data, err := os.ReadFile(filepath.Join(options.TargetDir, "one", ownershipFile))
+	require.NoError(t, err)
+	var marker map[string]any
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, map[string]any{
+		"version": float64(SchemaVersion),
+		"owner":   newInstaller(options.TargetDir, manifest, filepath.Join(root, "locks")).owner,
+		"skill":   "one",
+	}, marker)
+}
+
 func TestSyncRefusesToPruneFormerlyManagedSkillWithoutOwnershipMarker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -93,7 +115,7 @@ func TestInstallerRejectsEscapingTransactionPaths(t *testing.T) {
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	journal := transaction{Version: SchemaVersion, Action: "prune", Skill: "one", Backup: "../victim"}
 	require.NoError(t, writeJSONAtomic(filepath.Join(target, ".one.skillsrc-txn.json"), journal))
-	installer := newInstaller(target, filepath.Join(root, ".skillsrc"))
+	installer := newInstaller(target, filepath.Join(root, ".skillsrc"), filepath.Join(root, "locks"))
 
 	err := installer.withLock(context.Background(), func() error { return nil })
 	require.ErrorContains(t, err, "invalid transaction paths")
@@ -114,7 +136,7 @@ func TestInstallerPreservesUnownedArtifactLikeDirectory(t *testing.T) {
 	target := filepath.Join(root, "skills")
 	artifact := filepath.Join(target, ".foo.skillsrc-tmp-user")
 	writeTestFile(t, filepath.Join(artifact, "keep"), "preserve")
-	installer := newInstaller(target, filepath.Join(root, ".skillsrc"))
+	installer := newInstaller(target, filepath.Join(root, ".skillsrc"), filepath.Join(root, "locks"))
 
 	err := installer.withLock(context.Background(), func() error { return nil })
 	require.ErrorContains(t, err, "requires inspection")
@@ -126,13 +148,13 @@ func TestInstallerRecoversInterruptedReplacement(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "skills")
 	manifest := filepath.Join(root, ".skillsrc")
-	installer := newInstaller(target, manifest)
+	installer := newInstaller(target, manifest, filepath.Join(root, "locks"))
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	backup := filepath.Join(target, ".one.skillsrc-old-test")
 	staging := filepath.Join(target, ".one.skillsrc-tmp-test")
 	makeSkill(t, backup, "one", "old")
 	makeSkill(t, staging, "one", "new")
-	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: "one", Source: "local:./local", Hash: "sha256:test"}
+	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: "one"}
 	data, err := json.Marshal(marker)
 	require.NoError(t, err)
 	writeTestFile(t, filepath.Join(staging, ownershipFile), string(data)+"\n")

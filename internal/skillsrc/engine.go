@@ -2,7 +2,6 @@ package skillsrc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,10 +11,12 @@ import (
 )
 
 type Options struct {
+	ProjectRoot  string
 	ManifestPath string
 	LockPath     string
 	TargetDir    string
 	CacheDir     string
+	LockDir      string
 	GitBinary    string
 	Out          io.Writer
 	Err          io.Writer
@@ -45,14 +46,34 @@ type Change struct {
 	New    string `json:"new"`
 }
 
+type OutdatedSource struct {
+	Source string
+	Old    GitRevision
+	New    GitRevision
+}
+
+type OutdatedResult struct {
+	Sources      []OutdatedSource
+	Fetches      []FetchEvent
+	LocalSkipped []string
+}
+
 type Engine struct{ options Options }
 
 func NewEngine(options Options) *Engine { return &Engine{options: options} }
 
+func (engine *Engine) newInstaller() *installer {
+	lockDir := engine.options.LockDir
+	if lockDir == "" {
+		lockDir = filepath.Join(filepath.Dir(engine.options.CacheDir), "locks")
+	}
+	return newInstaller(engine.options.TargetDir, engine.options.ManifestPath, lockDir)
+}
+
 func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested []string, all bool) ([]string, Result, error) {
 	var available []string
 	var result Result
-	installer := newInstaller(engine.options.TargetDir, engine.options.ManifestPath)
+	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
 		var operationErr error
 		available, result, operationErr = engine.addLocked(ctx, installer, source, requested, all)
@@ -63,13 +84,7 @@ func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested 
 
 func (engine *Engine) addLocked(ctx context.Context, installer *installer, source ManifestSource, requested []string, all bool) ([]string, Result, error) {
 	manifest, err := LoadManifest(engine.options.ManifestPath)
-	if errors.Is(err, os.ErrNotExist) {
-		absolute, pathErr := filepath.Abs(engine.options.ManifestPath)
-		if pathErr != nil {
-			return nil, Result{}, pathErr
-		}
-		manifest = Manifest{Version: SchemaVersion, Path: filepath.Clean(absolute)}
-	} else if err != nil {
+	if err != nil {
 		return nil, Result{}, err
 	}
 	oldLock, err := LoadLock(engine.options.LockPath)
@@ -151,7 +166,7 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 
 func (engine *Engine) Remove(ctx context.Context, names []string) (Result, error) {
 	var result Result
-	installer := newInstaller(engine.options.TargetDir, engine.options.ManifestPath)
+	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
 		var operationErr error
 		result, operationErr = engine.removeLocked(ctx, installer, names)
@@ -332,7 +347,7 @@ type resolvedSource struct {
 
 func (engine *Engine) Sync(ctx context.Context) (Result, error) {
 	var result Result
-	installer := newInstaller(engine.options.TargetDir, engine.options.ManifestPath)
+	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
 		var operationErr error
 		result, operationErr = engine.syncLocked(ctx, installer)
@@ -359,9 +374,62 @@ func (engine *Engine) syncLocked(ctx context.Context, installer *installer) (Res
 	return Result{Fetches: git.Fetches(), Skills: actions}, nil
 }
 
+// Outdated fetches selected Git refs and reports commit changes without
+// modifying the manifest, lockfile, or installed skills.
+func (engine *Engine) Outdated(ctx context.Context, selectors []string) (OutdatedResult, error) {
+	manifest, oldLock, err := engine.load()
+	if err != nil {
+		return OutdatedResult{}, err
+	}
+	selected, err := selectUpdates(manifest, selectors)
+	if err != nil {
+		return OutdatedResult{}, err
+	}
+	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
+	var sources []OutdatedSource
+	for index, source := range manifest.Sources {
+		if !selected[index] || source.Path != "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return OutdatedResult{Fetches: git.Fetches()}, err
+		}
+		repository, err := NormalizeRepository(source.Repo)
+		if err != nil {
+			return OutdatedResult{Fetches: git.Fetches()}, err
+		}
+		previous := matchingLockSource(oldLock, source, repository.Identity)
+		lockedCommit := ""
+		if previous != nil {
+			lockedCommit = previous.Commit
+		}
+		currentCommit, err := git.Resolve(ctx, source.Repo, source.Ref, true, lockedCommit)
+		if err != nil {
+			return OutdatedResult{Fetches: git.Fetches()}, err
+		}
+		var oldRevision GitRevision
+		if lockedCommit != "" {
+			oldRevision, err = git.Revision(ctx, source.Repo, lockedCommit)
+			if err != nil {
+				return OutdatedResult{Fetches: git.Fetches()}, err
+			}
+		}
+		newRevision, err := git.Revision(ctx, source.Repo, currentCommit)
+		if err != nil {
+			return OutdatedResult{Fetches: git.Fetches()}, err
+		}
+		sources = append(sources, OutdatedSource{Source: source.Repo, Old: oldRevision, New: newRevision})
+	}
+	return OutdatedResult{
+		Sources:      sources,
+		Fetches:      git.Fetches(),
+		LocalSkipped: selectedLocalSources(manifest, selected),
+	}, nil
+}
+
 func (engine *Engine) Update(ctx context.Context, selectors []string) (Result, error) {
 	var result Result
-	installer := newInstaller(engine.options.TargetDir, engine.options.ManifestPath)
+	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
 		var operationErr error
 		result, operationErr = engine.updateLocked(ctx, installer, selectors)
@@ -507,8 +575,8 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, old
 			if skill.Path != "." {
 				dir = filepath.Join(source.root, filepath.FromSlash(skill.Path))
 			}
-			state := installedStatus(installer, engine.options.TargetDir, source.lock.Identity, skill)
-			if err := installer.install(ctx, skill.Name, source.lock.Identity, dir, skill.Hash); err != nil {
+			state := installedStatus(installer, engine.options.TargetDir, skill)
+			if err := installer.install(ctx, skill.Name, dir, skill.Hash); err != nil {
 				return actions, fmt.Errorf("install %q: %w", skill.Name, err)
 			}
 			action := "repaired"
@@ -544,6 +612,14 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, old
 	}
 	if err := writeAtomic(engine.options.LockPath, encoded, 0o644); err != nil {
 		return actions, fmt.Errorf("write lockfile: %w", err)
+	}
+	if engine.options.ProjectRoot != "" {
+		if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
+			return actions, fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
+		}
+		if err := WriteManagedGitignore(engine.options.ProjectRoot, newLock); err != nil {
+			return actions, fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
+		}
 	}
 	sort.Slice(actions, func(i, j int) bool {
 		if actions[i].Action != actions[j].Action {
@@ -660,25 +736,4 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
-}
-
-func DefaultOptions() (Options, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Options{}, err
-	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return Options{}, err
-	}
-	manifest := filepath.Join(home, ".agents", "skills.toml")
-	return Options{
-		ManifestPath: manifest,
-		LockPath:     filepath.Join(filepath.Dir(manifest), "skills.lock"),
-		TargetDir:    filepath.Join(home, ".agents", "skills"),
-		CacheDir:     filepath.Join(cache, "skillsrc", "repos"),
-		GitBinary:    "git",
-		Out:          os.Stdout,
-		Err:          os.Stderr,
-	}, nil
 }

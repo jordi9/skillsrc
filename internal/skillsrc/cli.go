@@ -12,41 +12,105 @@ import (
 	"text/tabwriter"
 )
 
-func RunCLI(ctx context.Context, args []string, options Options) int {
-	if options.Out == nil {
-		options.Out = io.Discard
+func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
+	if runtime.Out == nil {
+		runtime.Out = io.Discard
 	}
-	if options.Err == nil {
-		options.Err = io.Discard
+	if runtime.Err == nil {
+		runtime.Err = io.Discard
 	}
 	global := flag.NewFlagSet("skillsrc", flag.ContinueOnError)
-	global.SetOutput(options.Err)
-	manifest := global.String("manifest", options.ManifestPath, "manifest path (default ~/.agents/skills.toml)")
-	lock := global.String("lock", "", "lockfile path (default beside manifest)")
-	target := global.String("target", options.TargetDir, "installation target")
-	cache := global.String("cache", options.CacheDir, "repository cache")
-	git := global.String("git", options.GitBinary, "git executable")
-	global.Usage = func() { printUsage(options.Err) }
+	global.SetOutput(io.Discard)
+	var user, help bool
+	global.BoolVar(&help, "h", false, "print help")
+	global.BoolVar(&help, "help", false, "print help")
+	global.BoolVar(&user, "g", false, "use the user-level configuration")
+	global.BoolVar(&user, "global", false, "use the user-level configuration")
+	global.BoolVar(&user, "user", false, "use the user-level configuration")
+	manifest := global.String("manifest", "", "use an exact manifest path")
+	lock := global.String("lock", "", "override the lockfile path")
+	target := global.String("target", "", "override the installation target")
+	cache := global.String("cache", runtime.CacheDir, "repository cache")
+	git := global.String("git", runtime.GitBinary, "git executable")
+	global.Usage = func() {}
 	if err := global.Parse(args); err != nil {
-		return 2
+		return cliUsageError(runtime.Err, err.Error())
+	}
+	if help {
+		printUsage(runtime.Out)
+		return 0
 	}
 	remaining := global.Args()
 	if len(remaining) == 0 {
-		printUsage(options.Err)
-		return 2
+		return cliUsageError(runtime.Err, "command required")
 	}
-	manifestChanged := *manifest != global.Lookup("manifest").DefValue
-	options.ManifestPath = *manifest
-	if *lock != "" {
-		options.LockPath = *lock
-	} else if manifestChanged || options.LockPath == "" {
-		options.LockPath = filepath.Join(filepath.Dir(*manifest), "skills.lock")
+	command := remaining[0]
+	if command == "help" {
+		printUsage(runtime.Out)
+		return 0
 	}
-	options.TargetDir, options.CacheDir, options.GitBinary = *target, *cache, *git
+	known := map[string]bool{"init": true, "sync": true, "outdated": true, "update": true, "add": true, "remove": true, "rm": true, "list": true, "ls": true, "doctor": true}
+	if !known[command] {
+		return cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", command))
+	}
+	explicit := make(map[string]bool)
+	global.Visit(func(found *flag.Flag) { explicit[found.Name] = true })
+	request := ScopeRequest{
+		User:             user,
+		ManifestPath:     *manifest,
+		ManifestExplicit: explicit["manifest"],
+		LockPath:         *lock,
+		LockExplicit:     explicit["lock"],
+		TargetDir:        *target,
+		TargetExplicit:   explicit["target"],
+	}
+	if request.User && request.ManifestExplicit {
+		return cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest")
+	}
+	if command == "init" {
+		if len(remaining) != 1 {
+			return cliUsageError(runtime.Err, "init accepts no arguments")
+		}
+		layout, err := ResolveInitLayout(request, runtime)
+		if err == nil {
+			err = InitializeManifest(layout.ManifestPath)
+		}
+		if err == nil && layout.ProjectRoot != "" {
+			err = EnsureRootGitignore(layout.ProjectRoot)
+			if err == nil {
+				err = WriteManagedGitignore(layout.ProjectRoot, Lock{Version: SchemaVersion})
+			}
+		}
+		if err != nil {
+			printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
+			return 1
+		}
+		fmt.Fprintf(runtime.Out, "  ✓ %s · initialized\n", displayPath(layout.ManifestPath, runtime.HomeDir))
+		return 0
+	}
+	layout, err := ResolveLayout(request, runtime)
+	if err != nil {
+		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
+		return 1
+	}
+	lockDir := runtime.LockDir
+	if lockDir == "" {
+		lockDir = filepath.Join(filepath.Dir(runtime.CacheDir), "locks")
+	}
+	options := Options{
+		ProjectRoot:  layout.ProjectRoot,
+		ManifestPath: layout.ManifestPath,
+		LockPath:     layout.LockPath,
+		TargetDir:    layout.TargetDir,
+		CacheDir:     *cache,
+		LockDir:      lockDir,
+		GitBinary:    *git,
+		Out:          runtime.Out,
+		Err:          runtime.Err,
+	}
 	engine := NewEngine(options)
 
-	var err error
-	switch remaining[0] {
+	switch command {
 	case "sync":
 		if len(remaining) != 1 {
 			return cliUsageError(options.Err, "sync accepts no arguments")
@@ -54,61 +118,190 @@ func RunCLI(ctx context.Context, args []string, options Options) int {
 		var result Result
 		result, err = engine.Sync(ctx)
 		if err == nil {
-			printResult(options.Out, "sync complete", result)
+			printResult(options.Out, "Sync complete", result, runtime.HomeDir, false)
+		}
+	case "outdated":
+		var result OutdatedResult
+		result, err = engine.Outdated(ctx, remaining[1:])
+		if err == nil {
+			printOutdated(options.Out, result, runtime.HomeDir)
 		}
 	case "update":
 		var result Result
 		result, err = engine.Update(ctx, remaining[1:])
 		if err == nil {
+			printFetches(options.Out, result.Fetches, runtime.HomeDir)
 			for _, change := range result.Changes {
-				old := change.Old
+				old := displayCommit(change.Old)
 				if old == "" {
 					old = "(unlocked)"
 				}
-				fmt.Fprintf(options.Out, "%s: %s -> %s\n", change.Source, old, change.New)
+				fmt.Fprintf(options.Out, "  ✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
 			}
 			for _, local := range result.LocalSkipped {
-				fmt.Fprintf(options.Out, "%s: local (no remote version)\n", local)
+				fmt.Fprintf(options.Out, "  • %s · local source, skipped\n", displaySource(local, runtime.HomeDir))
 			}
-			printResult(options.Out, "update complete", result)
+			printResult(options.Out, "Update complete", result, runtime.HomeDir, true)
 		}
 	case "add":
-		err = runAddCLI(ctx, engine, remaining[1:], options.Out)
+		err = runAddCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
 	case "remove", "rm":
-		err = runRemoveCLI(ctx, engine, remaining[1:], options.Out)
+		err = runRemoveCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
 	case "list", "ls":
-		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err)
+		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err, runtime.HomeDir)
 	case "doctor":
 		var issues bool
-		issues, err = runDoctorCLI(ctx, engine, remaining[1:], options.Out, options.Err)
+		issues, err = runDoctorCLI(ctx, engine, remaining[1:], options.Out, options.Err, runtime.HomeDir)
 		if err == nil && issues {
 			return 1
 		}
-	case "help":
-		printUsage(options.Out)
-		return 0
-	default:
-		return cliUsageError(options.Err, fmt.Sprintf("unknown command %q", remaining[0]))
 	}
 	if err != nil {
-		fmt.Fprintf(options.Err, "skillsrc: %v\n", err)
+		printCLIError(options.Err, err.Error(), runtime.HomeDir)
 		return 1
 	}
 	return 0
 }
 
-func printFetches(output io.Writer, fetches []FetchEvent) {
-	for _, fetch := range fetches {
-		commit := ""
-		if fetch.Commit != "" {
-			commit = " (" + fetch.Commit + ")"
+func printCLIError(output io.Writer, message, home string) {
+	message = strings.TrimPrefix(message, "validation: ")
+	fmt.Fprintf(output, "Error: %s\n", displayPathsInText(message, home))
+}
+
+func displayPath(path, home string) string {
+	if home == "" {
+		return path
+	}
+	relative, err := filepath.Rel(filepath.Clean(home), filepath.Clean(path))
+	if err != nil || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return path
+	}
+	if relative == "." {
+		return "~"
+	}
+	return "~" + string(filepath.Separator) + relative
+}
+
+func displayPossiblePath(value, home string) string {
+	if filepath.IsAbs(value) {
+		return displayPath(value, home)
+	}
+	return value
+}
+
+func displayPathsInText(text, home string) string {
+	home = filepath.Clean(home)
+	if home == "" || home == "." {
+		return text
+	}
+	var result strings.Builder
+	for {
+		index := strings.Index(text, home)
+		if index < 0 {
+			result.WriteString(text)
+			return result.String()
 		}
-		fmt.Fprintf(output, "fetched %s: %s%s\n", fetch.Source, fetch.Reason, commit)
+		beforeBoundary := index == 0 || strings.ContainsRune(" \t\n\r\"'([{=:", rune(text[index-1]))
+		after := index + len(home)
+		afterBoundary := after == len(text) || text[after] == filepath.Separator
+		if beforeBoundary && afterBoundary {
+			result.WriteString(text[:index])
+			result.WriteByte('~')
+			text = text[after:]
+			continue
+		}
+		result.WriteString(text[:after])
+		text = text[after:]
 	}
 }
 
-func printResult(output io.Writer, label string, result Result) {
-	printFetches(output, result.Fetches)
+func printFetches(output io.Writer, fetches []FetchEvent, home string) {
+	for _, fetch := range fetches {
+		detail := humanFetchReason(fetch.Reason)
+		if fetch.Commit != "" {
+			commit := fetch.Commit
+			if len(commit) > 12 {
+				commit = commit[:12]
+			}
+			detail += " at " + commit
+		}
+		fmt.Fprintf(output, "  ↓ %s · fetched", displaySource(fetch.Source, home))
+		if detail != "" {
+			fmt.Fprintf(output, " · %s", detail)
+		}
+		fmt.Fprintln(output)
+	}
+}
+
+func humanFetchReason(reason string) string {
+	switch reason {
+	case "new or changed declaration":
+		return ""
+	case "update configured ref":
+		return ""
+	case "locked commit missing from cache":
+		return "restoring locked commit"
+	case "exact configured commit missing from cache":
+		return "restoring configured commit"
+	default:
+		return reason
+	}
+}
+
+func displayCommit(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
+func displayRevisionMetadata(revision GitRevision) string {
+	if revision.Commit == "" {
+		return "(unlocked)"
+	}
+	label := revision.Tag
+	if label == "" {
+		label = revision.Date
+	}
+	commit := displayCommit(revision.Commit)
+	if label == "" || label == commit {
+		return commit
+	}
+	return fmt.Sprintf("%s (%s)", label, commit)
+}
+
+func printOutdated(output io.Writer, result OutdatedResult, home string) {
+	updates := 0
+	for _, source := range result.Sources {
+		name := displaySource(source.Source, home)
+		if source.Old.Commit == source.New.Commit {
+			fmt.Fprintf(output, "  ✓ %s · up to date\n", name)
+			continue
+		}
+		updates++
+		fmt.Fprintf(output, "  ↑ %s · update available · %s → %s\n", name, displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
+	}
+	for _, local := range result.LocalSkipped {
+		fmt.Fprintf(output, "  • %s · local source, skipped\n", displaySource(local, home))
+	}
+	if updates == 0 {
+		if len(result.Sources) == 0 && len(result.LocalSkipped) == 0 {
+			fmt.Fprintln(output, "  ✓ No Git sources to check")
+		}
+		return
+	}
+	fmt.Fprintln(output)
+	noun := "updates"
+	if updates == 1 {
+		noun = "update"
+	}
+	fmt.Fprintf(output, "  └─ Summary · %d %s available\n", updates, noun)
+}
+
+func printResult(output io.Writer, label string, result Result, home string, fetchesPrinted bool) {
+	if !fetchesPrinted {
+		printFetches(output, result.Fetches, home)
+	}
 	counts := map[string]int{"installed": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
 	names := map[string][]string{}
 	for _, skill := range result.Skills {
@@ -117,15 +310,45 @@ func printResult(output io.Writer, label string, result Result) {
 			names[skill.Action] = append(names[skill.Action], skill.Name)
 		}
 	}
+	actionLabels := map[string]string{"installed": "installed", "repaired": "restored", "pruned": "removed"}
+	printedDetails := len(result.Fetches) > 0
 	for _, action := range []string{"installed", "repaired", "pruned"} {
-		if len(names[action]) > 0 {
-			fmt.Fprintf(output, "%s: %s\n", action, strings.Join(names[action], ", "))
+		for _, name := range names[action] {
+			fmt.Fprintf(output, "  ✓ %s · %s\n", name, actionLabels[action])
+			printedDetails = true
 		}
 	}
-	fmt.Fprintf(output, "%s: %d installed, %d repaired, %d unchanged, %d pruned; %d repositories fetched\n", label, counts["installed"], counts["repaired"], counts["unchanged"], counts["pruned"], len(result.Fetches))
+	var summary []string
+	for _, item := range []struct {
+		count int
+		label string
+	}{
+		{counts["installed"], "installed"},
+		{counts["repaired"], "restored"},
+		{counts["unchanged"], "up to date"},
+		{counts["pruned"], "removed"},
+	} {
+		if item.count > 0 {
+			summary = append(summary, fmt.Sprintf("%d %s", item.count, item.label))
+		}
+	}
+	if fetched := len(result.Fetches); fetched > 0 {
+		noun := "repositories"
+		if fetched == 1 {
+			noun = "repository"
+		}
+		summary = append(summary, fmt.Sprintf("%d %s fetched", fetched, noun))
+	}
+	if len(summary) == 0 {
+		summary = append(summary, "no changes")
+	}
+	if printedDetails {
+		fmt.Fprintln(output)
+	}
+	fmt.Fprintf(output, "  └─ %s · %s\n", label, strings.Join(summary, " · "))
 }
 
-func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Writer) error {
+func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
 	parsed, err := parseAddArgs(args)
 	if err != nil {
 		return err
@@ -139,10 +362,13 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 		if err != nil {
 			return err
 		}
-		printFetches(output, result.Fetches)
-		fmt.Fprintf(output, "Available skills in %s:\n", parsed.source)
+		printFetches(output, result.Fetches, home)
+		if len(result.Fetches) > 0 {
+			fmt.Fprintln(output)
+		}
+		fmt.Fprintf(output, "Available skills from %s:\n", displaySource(parsed.source, home))
 		for _, name := range names {
-			fmt.Fprintf(output, "  %s\n", name)
+			fmt.Fprintf(output, "  • %s\n", name)
 		}
 		return nil
 	}
@@ -150,7 +376,7 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 	if err != nil {
 		return err
 	}
-	printResult(output, "add complete", result)
+	printResult(output, "Add complete", result, home, false)
 	return nil
 }
 
@@ -199,7 +425,7 @@ func parseAddArgs(args []string) (addArguments, error) {
 	return parsed, nil
 }
 
-func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer) error {
+func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
 	if len(args) == 0 {
 		return errors.New("remove requires at least one skill name")
 	}
@@ -207,7 +433,7 @@ func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.
 	if err != nil {
 		return err
 	}
-	printResult(output, "remove complete", result)
+	printResult(output, "Remove complete", result, home, false)
 	return nil
 }
 
@@ -234,9 +460,9 @@ func addSource(manifestPath, input, ref string) (ManifestSource, error) {
 	return ManifestSource{Path: filepath.ToSlash(stored), ResolvedPath: absolute}, nil
 }
 
-func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer) error {
+func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer, home string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
-	flags.SetOutput(errorOutput)
+	flags.SetOutput(io.Discard)
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -254,37 +480,44 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 		return encoder.Encode(statuses)
 	}
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "SKILL\tSOURCE\tREVISION\tSTATE")
+	fmt.Fprintln(writer, "SKILL\tSOURCE\tREVISION\tSTATUS")
 	counts := make(map[string]int)
 	for _, status := range statuses {
 		counts[status.Status]++
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source), displayRevision(status), displayState(status.Status))
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), displayRevision(status), displayState(status.Status))
 	}
 	fmt.Fprintln(writer)
-	fmt.Fprintf(writer, "%d skills", len(statuses))
+	skillNoun := "skills"
+	if len(statuses) == 1 {
+		skillNoun = "skill"
+	}
+	fmt.Fprintf(writer, "%d %s", len(statuses), skillNoun)
 	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked"} {
 		if counts[state] == 0 {
 			continue
 		}
 		label := state
 		if state == "current" {
-			label = "synced with skills.lock"
+			label = "synced"
 		} else if state == "drifted" {
 			label = "modified"
 		} else if state == "collision" {
 			label = "blocked"
 		}
-		fmt.Fprintf(writer, "  ·  %d %s", counts[state], label)
+		fmt.Fprintf(writer, " · %d %s", counts[state], label)
 	}
 	fmt.Fprintln(writer)
 	return writer.Flush()
 }
 
-func displaySource(source string) string {
+func displaySource(source string, home ...string) string {
 	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "https://github.com/"} {
 		if strings.HasPrefix(source, prefix) {
 			return strings.TrimSuffix(strings.TrimPrefix(source, prefix), ".git")
 		}
+	}
+	if len(home) > 0 {
+		return displayPossiblePath(source, home[0])
 	}
 	return source
 }
@@ -321,9 +554,9 @@ func displayState(state string) string {
 	}
 }
 
-func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer) (bool, error) {
+func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer, home string) (bool, error) {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	flags.SetOutput(errorOutput)
+	flags.SetOutput(io.Discard)
 	repair := flags.Bool("repair", false, "repair by running sync")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
@@ -343,39 +576,55 @@ func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, er
 			return false, err
 		}
 	} else if len(report.Issues) == 0 {
-		fmt.Fprintln(output, "ok")
+		fmt.Fprintln(output, "  ✓ No issues found")
 	} else {
 		for _, issue := range report.Issues {
 			label := issue.Kind
 			if issue.Skill != "" {
 				label += "/" + issue.Skill
 			}
-			fmt.Fprintf(output, "%s: %s\n", label, issue.Message)
+			fmt.Fprintf(output, "  ! %s · %s\n", label, displayPathsInText(issue.Message, home))
 		}
 	}
 	return len(report.Issues) > 0, nil
 }
 
 func cliUsageError(output io.Writer, message string) int {
-	fmt.Fprintf(output, "skillsrc: %s\n", message)
-	printUsage(output)
+	fmt.Fprintf(output, "Error: %s\n\n", message)
+	fmt.Fprintln(output, "Usage: skillsrc [OPTIONS] <COMMAND>")
+	fmt.Fprintln(output)
+	fmt.Fprintln(output, "For more information, run 'skillsrc --help'.")
 	return 2
 }
 
 func printUsage(output io.Writer) {
-	fmt.Fprintln(output, strings.TrimSpace(`skillsrc - Declarative skill dependencies for .agents/skills.
+	fmt.Fprintln(output, strings.TrimSpace(`skillsrc — Declarative skill dependencies for .agents/skills
 
-Usage:
-  skillsrc [global flags] sync
-  skillsrc [global flags] add SOURCE [SKILL ...] [--all] [--list] [--ref REF]
-  skillsrc [global flags] remove SKILL ...
-  skillsrc [global flags] update [source-or-skill ...]
-  skillsrc [global flags] list [--json]
-  skillsrc [global flags] doctor [--repair] [--json]
+Usage: skillsrc [OPTIONS] <COMMAND>
 
-Global flags:
-  --manifest PATH  manifest (default ~/.agents/skills.toml)
-  --lock PATH      lockfile (default skills.lock beside manifest)
-  --target PATH    installation directory (default ~/.agents/skills)
-  --cache PATH     Git repository cache (default user cache/skillsrc/repos)`))
+Commands:
+  init      Initialize a manifest
+  sync      Install the exact declared and locked skill set
+  add       Add skills from a Git repository or local directory
+  remove    Remove skills and their managed installations [alias: rm]
+  outdated  Show available Git updates without changing project files
+  update    Update Git revisions, then sync
+  list      Show configured skills and installation state [alias: ls]
+  doctor    Diagnose or repair lock, install, cache, and project metadata
+  help      Print this message
+
+Scope selection:
+  By default, skillsrc uses the nearest project skills.toml.
+
+  -g, --global       Use ~/.agents/skills.toml
+      --user         Alias for --global
+      --manifest PATH
+                     Use the skills.toml at PATH instead of searching parent directories
+
+Options:
+      --lock PATH    Override the lockfile path
+      --target PATH  Override the installation directory
+      --cache PATH   Override the Git repository cache
+      --git PATH     Override the Git executable
+  -h, --help         Print help`))
 }

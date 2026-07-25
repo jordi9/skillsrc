@@ -20,8 +20,6 @@ type ownership struct {
 	Version int    `json:"version"`
 	Owner   string `json:"owner"`
 	Skill   string `json:"skill"`
-	Source  string `json:"source"`
-	Hash    string `json:"hash"`
 }
 
 type transaction struct {
@@ -33,26 +31,36 @@ type transaction struct {
 }
 
 type installer struct {
-	target  string
-	lockDir string
-	owner   string
+	target           string
+	manifestLockPath string
+	lockDir          string
+	owner            string
 }
 
-func newInstaller(target, manifestPath string) *installer {
+func newInstaller(target, manifestPath, lockDir string) *installer {
 	absolute, _ := filepath.Abs(manifestPath)
 	clean := filepath.Clean(absolute)
-	return &installer{target: target, lockDir: filepath.Dir(clean), owner: sha256String(clean)}
+	return &installer{
+		target:           target,
+		manifestLockPath: filepath.Dir(clean),
+		lockDir:          lockDir,
+		owner:            sha256String(clean),
+	}
 }
 
 func (installer *installer) withLock(ctx context.Context, operation func() error) error {
-	targetParent := filepath.Dir(installer.target)
-	for _, directory := range []string{targetParent, installer.lockDir} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return err
-		}
+	targetParent, err := filepath.Abs(filepath.Dir(installer.target))
+	if err != nil {
+		return fmt.Errorf("resolve install target: %w", err)
 	}
-	lockPaths := []string{filepath.Join(installer.lockDir, ".skillsrc-install.lock")}
-	targetLock := filepath.Join(targetParent, ".skillsrc-install.lock")
+	if err := os.MkdirAll(targetParent, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(installer.lockDir, 0o755); err != nil {
+		return fmt.Errorf("create lock cache: %w", err)
+	}
+	lockPaths := []string{cacheLockPath(installer.lockDir, installer.manifestLockPath)}
+	targetLock := cacheLockPath(installer.lockDir, filepath.Clean(targetParent))
 	if targetLock != lockPaths[0] {
 		lockPaths = append(lockPaths, targetLock)
 		sort.Strings(lockPaths)
@@ -82,7 +90,12 @@ func (installer *installer) withLock(ctx context.Context, operation func() error
 	return operation()
 }
 
-func (installer *installer) install(ctx context.Context, name, sourceIdentity, sourceDir, expectedHash string) error {
+func cacheLockPath(lockDir, resource string) string {
+	digest := sha256.Sum256([]byte(filepath.Clean(resource)))
+	return filepath.Join(lockDir, hex.EncodeToString(digest[:])+".lock")
+}
+
+func (installer *installer) install(ctx context.Context, name, sourceDir, expectedHash string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -95,7 +108,7 @@ func (installer *installer) install(ctx context.Context, name, sourceIdentity, s
 		if markerErr != nil || !managed {
 			return fmt.Errorf("unmanaged collision at %q", destination)
 		}
-		if installedStatus(installer, installer.target, sourceIdentity, LockedSkill{Name: name, Hash: expectedHash}) == "current" {
+		if installedStatus(installer, installer.target, LockedSkill{Name: name, Hash: expectedHash}) == "current" {
 			return nil
 		}
 	}
@@ -120,7 +133,7 @@ func (installer *installer) install(ctx context.Context, name, sourceIdentity, s
 	if actualHash != expectedHash {
 		return fmt.Errorf("skill %q changed while being copied: got %s, expected %s", name, actualHash, expectedHash)
 	}
-	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: name, Source: sourceIdentity, Hash: expectedHash}
+	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: name}
 	markerBytes, _ := json.Marshal(marker)
 	markerBytes = append(markerBytes, '\n')
 	if err := writeFileSynced(filepath.Join(staging, ownershipFile), markerBytes, 0o644); err != nil {
@@ -436,6 +449,39 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func writeAtomicNew(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".skillsrc-write-")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	// Linking publishes the fully synced file atomically and, unlike Rename,
+	// fails when another initializer has already created the destination.
+	if err := os.Link(temporaryPath, path); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))

@@ -1,6 +1,8 @@
 # Lockfile
 
-`skills.lock` is generated beside the manifest by default. Commit it when the manifest is shared: `sync` uses its pinned Git commits, selected skill paths, and content hashes to reproduce an installation.
+`skills.lock` is generated beside the manifest by default. Project lockfiles are committed alongside `skills.toml`; do not add `skills.lock` to `.gitignore`. The lock is the reproducibility boundary for clones: `sync` uses its pinned Git commits, selected skill paths, and content hashes to reproduce an installation.
+
+User-level (`--global`) and explicit-manifest configurations use the same lock format, but whether to commit those files is determined by their owner rather than by skillsrc.
 
 The schema is version 1. A Git source records:
 

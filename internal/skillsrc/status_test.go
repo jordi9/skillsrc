@@ -2,6 +2,7 @@ package skillsrc
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,34 @@ func TestListReportsCurrentMissingDriftedAndCollision(t *testing.T) {
 	assert.Equal(t, "missing", got["missing"])
 	assert.Equal(t, "drifted", got["drifted"])
 	assert.Equal(t, "collision", got["collision"])
+}
+
+func TestListIgnoresLegacyProvenanceInOwnershipMarker(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "canonical")
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+
+	markerPath := filepath.Join(options.TargetDir, "one", ownershipFile)
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker map[string]any
+	require.NoError(t, json.Unmarshal(data, &marker))
+	marker["source"] = "legacy-source"
+	marker["hash"] = "sha256:legacy"
+	data, err = json.Marshal(marker)
+	require.NoError(t, err)
+	writeTestFile(t, markerPath, string(data)+"\n")
+
+	statuses, err := NewEngine(options).List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "current", statuses[0].Status)
 }
 
 func TestDoctorReportsChangedLocalSourceBeforeSync(t *testing.T) {

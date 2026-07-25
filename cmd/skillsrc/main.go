@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	options, err := skillsrc.DefaultOptions()
+	options, err := skillsrc.DefaultCLIOptions()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "skillsrc: determine default paths: %v\n", err)
 		os.Exit(1)
