@@ -58,10 +58,12 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	explicit := make(map[string]bool)
 	global.Visit(func(found *flag.Flag) { explicit[found.Name] = true })
+	manifestExplicit := explicit["manifest"]
+	autoUserScope := !user && !manifestExplicit && isUserAgentsDir(runtime.WorkingDir, runtime.HomeDir)
 	request := ScopeRequest{
-		User:             user,
+		User:             user || autoUserScope,
 		ManifestPath:     *manifest,
-		ManifestExplicit: explicit["manifest"],
+		ManifestExplicit: manifestExplicit,
 		LockPath:         *lock,
 		LockExplicit:     explicit["lock"],
 		TargetDir:        *target,
@@ -69,6 +71,9 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	if request.User && request.ManifestExplicit {
 		return cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest")
+	}
+	if autoUserScope {
+		fmt.Fprintln(runtime.Out, "  • ~/.agents · using user scope")
 	}
 	if command == "init" {
 		if len(remaining) != 1 {
@@ -518,12 +523,13 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	color := supportsColor(output)
 	var table bytes.Buffer
 	writer := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "SKILL\tSOURCE\tMODEL INVOCATION\tSTATUS\tREVISION")
-	fmt.Fprintln(writer, "─────\t──────\t────────────────\t──────\t────────")
+	fmt.Fprintln(writer, "SKILL\tSOURCE\tMODEL INVOCATION\tREVISION")
+	fmt.Fprintln(writer, "─────\t──────\t────────────────\t────────")
 	counts := make(map[string]int)
 	for _, status := range statuses {
 		counts[status.Status]++
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), status.ModelInvocation, displayState(status.Status, false), displayRevision(status))
+		marker, _, _ := stateDisplay(status.Status)
+		fmt.Fprintf(writer, "%s %s\t%s\t%s\t%s\n", marker, status.Name, displaySource(status.Source, home), displayModelInvocation(status.ModelInvocation), displayRevision(status))
 	}
 	if err := writer.Flush(); err != nil {
 		return err
@@ -533,6 +539,7 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	if color {
 		tableText = styleListRows(tableText, statuses)
 	}
+	tableText = addStatusDetails(tableText, statuses)
 	var result strings.Builder
 	result.WriteString(tableText)
 	result.WriteByte('\n')
@@ -585,9 +592,9 @@ func styleListRows(table string, statuses []SkillStatus) string {
 			break
 		}
 		line := strings.TrimSuffix(lines[lineIndex], "\n")
-		plainState := displayState(status.Status, false)
-		if stateIndex := strings.LastIndex(line, plainState); stateIndex >= 0 {
-			line = line[:stateIndex] + displayState(status.Status, true) + line[stateIndex+len(plainState):]
+		marker, _, colorCode := stateDisplay(status.Status)
+		if strings.HasPrefix(line, marker+" ") {
+			line = colorCode + marker + "\x1b[0m" + line[len(marker):]
 		}
 		revision := displayRevision(status)
 		if strings.HasSuffix(line, revision) {
@@ -596,6 +603,50 @@ func styleListRows(table string, statuses []SkillStatus) string {
 		lines[lineIndex] = line + "\n"
 	}
 	return strings.Join(lines, "")
+}
+
+func addStatusDetails(table string, statuses []SkillStatus) string {
+	lines := strings.SplitAfter(table, "\n")
+	var result strings.Builder
+	for index, line := range lines {
+		result.WriteString(line)
+		statusIndex := index - 2
+		if statusIndex < 0 || statusIndex >= len(statuses) {
+			continue
+		}
+		if detail := statusDetail(statuses[statusIndex].Status); detail != "" {
+			fmt.Fprintf(&result, "  └─ %s\n", detail)
+		}
+	}
+	return result.String()
+}
+
+func displayModelInvocation(invocation string) string {
+	switch invocation {
+	case "disabled by source":
+		return "disabled"
+	case "disabled by config":
+		return "!disabled"
+	default:
+		return invocation
+	}
+}
+
+func statusDetail(state string) string {
+	switch state {
+	case "current":
+		return ""
+	case "drifted":
+		return "modified — managed installation has drifted or been edited"
+	case "collision":
+		return "blocked — target path conflicts with an unmanaged installation"
+	case "missing":
+		return "missing — locked skill is not installed"
+	case "unlocked":
+		return "unlocked — declared skill has no consistent lock entry"
+	default:
+		return state
+	}
 }
 
 func displaySource(source string, home ...string) string {
@@ -625,15 +676,6 @@ func displayRevision(status SkillStatus) string {
 		return status.ConfiguredRef + " @ " + commit
 	}
 	return commit
-}
-
-func displayState(state string, color bool) string {
-	marker, label, colorCode := stateDisplay(state)
-	text := marker + " " + label
-	if !color {
-		return text
-	}
-	return colorCode + text + "\x1b[0m"
 }
 
 func stateDisplay(state string) (marker, label, colorCode string) {
@@ -712,6 +754,7 @@ Commands:
 
 Scope selection:
   By default, skillsrc uses the nearest project skills.toml.
+  When run directly from ~/.agents, skillsrc uses the user scope.
 
   -g, --global       Use ~/.agents/skills.toml
       --user         Alias for --global

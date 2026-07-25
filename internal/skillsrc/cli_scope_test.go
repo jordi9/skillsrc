@@ -74,6 +74,48 @@ func TestCLIUserAliasesSelectOnlyUserManifest(t *testing.T) {
 	}
 }
 
+func TestCLIDefaultsToUserScopeFromAgentsDirectory(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(home, ".agents")
+	writeTestFile(t, filepath.Join(cwd, "skills.toml"), "version = 1\n")
+	var out, stderr bytes.Buffer
+	runtime := scopeRuntime(cwd, home)
+	runtime.Out, runtime.Err = &out, &stderr
+
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"list"}, runtime), stderr.String())
+	assert.Contains(t, out.String(), "  • ~/.agents · using user scope\n")
+	assert.Contains(t, out.String(), "0 skills")
+}
+
+func TestCLIInitDefaultsToUserScopeFromAgentsDirectory(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(home, ".agents")
+	require.NoError(t, os.MkdirAll(cwd, 0o755))
+	var out, stderr bytes.Buffer
+	runtime := scopeRuntime(cwd, home)
+	runtime.Out, runtime.Err = &out, &stderr
+
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"init"}, runtime), stderr.String())
+	assert.Equal(t, "  • ~/.agents · using user scope\n  ✓ ~/.agents/skills.toml · initialized\n", out.String())
+	assert.FileExists(t, filepath.Join(cwd, "skills.toml"))
+	assert.NoFileExists(t, filepath.Join(cwd, ".gitignore"))
+}
+
+func TestCLIExplicitManifestOverridesAgentsDirectoryDefault(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(home, ".agents")
+	manifest := filepath.Join(home, "config", "skills.toml")
+	require.NoError(t, os.MkdirAll(cwd, 0o755))
+	writeTestFile(t, manifest, "version = 1\n")
+	var out, stderr bytes.Buffer
+	runtime := scopeRuntime(cwd, home)
+	runtime.Out, runtime.Err = &out, &stderr
+
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"--manifest", manifest, "list"}, runtime), stderr.String())
+	assert.NotContains(t, out.String(), "using user scope")
+	assert.Contains(t, out.String(), "0 skills")
+}
+
 func TestCLIManifestConflictIsUsageError(t *testing.T) {
 	home := t.TempDir()
 	var stderr bytes.Buffer

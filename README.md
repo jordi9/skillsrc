@@ -32,7 +32,7 @@ After cloning a project that contains the committed files, run:
 skillsrc sync
 ```
 
-From the current directory, operational commands search upward for the nearest `skills.toml`. When started inside `$HOME`, discovery stops before `$HOME/skills.toml`; outside `$HOME`, it stops at the filesystem root. There is no fallback to user-level configuration when project discovery fails.
+From the current directory, operational commands search upward for the nearest `skills.toml`. When started inside `$HOME`, discovery stops before `$HOME/skills.toml`; outside `$HOME`, it stops at the filesystem root. There is no fallback to user-level configuration when project discovery fails. The one exception is running directly from `~/.agents`, which defaults to user scope and prints a short notice.
 
 ## Selecting configuration
 
@@ -41,6 +41,7 @@ skillsrc sync                  # nearest project skills.toml
 skillsrc -g sync               # ~/.agents/skills.toml
 skillsrc --global sync         # same as -g
 skillsrc --user sync           # alias for --global
+(cd ~/.agents && skillsrc sync) # user scope inferred from this directory
 skillsrc --manifest PATH sync  # exact manifest; no discovery
 ```
 

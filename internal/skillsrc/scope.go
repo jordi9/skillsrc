@@ -192,3 +192,15 @@ func isWithin(path, parent string) bool {
 	relative, err := filepath.Rel(parent, path)
 	return err == nil && relative != "." && relative != ".." && !filepath.IsAbs(relative) && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
+
+func isUserAgentsDir(workingDir, homeDir string) bool {
+	workingDir, err := filepath.Abs(workingDir)
+	if err != nil {
+		return false
+	}
+	homeDir, err = filepath.Abs(homeDir)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(workingDir) == filepath.Join(filepath.Clean(homeDir), ".agents")
+}

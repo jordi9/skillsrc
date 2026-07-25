@@ -108,10 +108,15 @@ func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 	output.Reset()
 	errorOutput.Reset()
 	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
-	assert.Equal(t, "SKILL       SOURCE   MODEL INVOCATION    STATUS    REVISION\n─────       ──────   ────────────────    ──────    ────────\nconfigured  ./local  disabled by config  ✓ synced  local\nenabled     ./local  enabled             ✓ synced  local\nupstream    ./local  disabled by source  ✓ synced  local\n\n3 skills · 3 synced\n", output.String())
+	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✓ upstream    ./local  disabled          local\n\n3 skills · 3 synced\n", output.String())
 
 	require.NoError(t, os.RemoveAll(local))
 	require.NoError(t, os.RemoveAll(filepath.Join(options.TargetDir, "upstream")))
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✗ upstream    ./local  disabled          local\n  └─ missing — locked skill is not installed\n\n3 skills · 2 synced · 1 missing\n", output.String())
+
 	output.Reset()
 	errorOutput.Reset()
 	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
@@ -127,10 +132,19 @@ func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 func TestListDisplayStylesStatusAndRevisionWhenColorIsEnabled(t *testing.T) {
 	t.Parallel()
 	statuses := []SkillStatus{{Status: "current", ConfiguredRef: "main", LockedCommit: "0123456789abcdef"}}
-	plain := "SKILL  SOURCE  STATUS    REVISION\n─────  ──────  ──────    ────────\none    source  ✓ synced  main @ 0123456789ab\n"
+	plain := "SKILL  SOURCE  MODEL INVOCATION  REVISION\n─────  ──────  ────────────────  ────────\n✓ one  source  enabled           main @ 0123456789ab\n"
 	styled := styleListRows(plain, statuses)
-	assert.Contains(t, styled, "\x1b[32m✓ synced\x1b[0m")
+	assert.Contains(t, styled, "\x1b[32m✓\x1b[0m one")
 	assert.Contains(t, styled, "\x1b[2mmain @ 0123456789ab\x1b[0m")
+}
+
+func TestStatusDetailExplainsEveryNonSyncedState(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", statusDetail("current"))
+	assert.Equal(t, "modified — managed installation has drifted or been edited", statusDetail("drifted"))
+	assert.Equal(t, "blocked — target path conflicts with an unmanaged installation", statusDetail("collision"))
+	assert.Equal(t, "missing — locked skill is not installed", statusDetail("missing"))
+	assert.Equal(t, "unlocked — declared skill has no consistent lock entry", statusDetail("unlocked"))
 }
 
 func TestStyleCommandSuggestions(t *testing.T) {
