@@ -161,6 +161,38 @@ func skillName(dir string) (string, error) {
 	return name, nil
 }
 
+func sourceDisablesModelInvocation(dir string) (bool, error) {
+	file, err := os.Open(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return false, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(io.LimitReader(file, 64<<10))
+	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
+		return false, scanner.Err()
+	}
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "disable-model-invocation" {
+			continue
+		}
+		value, _, _ = strings.Cut(value, "#")
+		return strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"'`), "true"), nil
+	}
+	if err := scanner.Err(); err != nil {
+		return false, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+	}
+	return false, nil
+}
+
 func ValidateRelativeSkillPath(path string) error {
 	if path == "" || filepath.IsAbs(path) {
 		return &ValidationError{Problem: fmt.Sprintf("invalid skill path %q", path)}

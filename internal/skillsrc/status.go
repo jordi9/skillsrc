@@ -14,13 +14,14 @@ import (
 )
 
 type SkillStatus struct {
-	Name          string `json:"name"`
-	Source        string `json:"source"`
-	ConfiguredRef string `json:"configured_ref,omitempty"`
-	LockedCommit  string `json:"locked_commit,omitempty"`
-	LockedHash    string `json:"locked_hash,omitempty"`
-	ResolvedPath  string `json:"resolved_path,omitempty"`
-	Status        string `json:"status"`
+	Name            string `json:"name"`
+	Source          string `json:"source"`
+	ConfiguredRef   string `json:"configured_ref,omitempty"`
+	LockedCommit    string `json:"locked_commit,omitempty"`
+	LockedHash      string `json:"locked_hash,omitempty"`
+	ResolvedPath    string `json:"resolved_path,omitempty"`
+	ModelInvocation string `json:"model_invocation"`
+	Status          string `json:"status"`
 }
 
 type DoctorReport struct {
@@ -57,13 +58,26 @@ func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
 			identity = repository.Identity
 		}
 		for _, name := range source.Skills {
-			status := SkillStatus{Name: name, Source: sourceDisplay, ConfiguredRef: source.Ref, Status: "unlocked"}
+			status := SkillStatus{
+				Name:            name,
+				Source:          sourceDisplay,
+				ConfiguredRef:   source.Ref,
+				ModelInvocation: "enabled",
+				Status:          "unlocked",
+			}
 			locked := findLockedSkill(lock, kind, identity, source, name)
 			if locked != nil {
 				status.LockedCommit = locked.source.Commit
 				status.LockedHash = locked.skill.Hash
 				status.ResolvedPath = locked.skill.Path
 				status.Status = installedStatus(installer, engine.options.TargetDir, *locked.skill, source.DisableModelInvocation[name])
+				if locked.skill.SourceDisablesModelInvocation {
+					status.ModelInvocation = "disabled by source"
+				} else if source.DisableModelInvocation[name] {
+					status.ModelInvocation = "disabled by config"
+				}
+			} else if source.DisableModelInvocation[name] {
+				status.ModelInvocation = "disabled by config"
 			}
 			statuses = append(statuses, status)
 		}

@@ -518,12 +518,12 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	color := supportsColor(output)
 	var table bytes.Buffer
 	writer := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "SKILL\tSOURCE\tSTATUS\tREVISION")
-	fmt.Fprintln(writer, "─────\t──────\t──────\t────────")
+	fmt.Fprintln(writer, "SKILL\tSOURCE\tMODEL INVOCATION\tSTATUS\tREVISION")
+	fmt.Fprintln(writer, "─────\t──────\t────────────────\t──────\t────────")
 	counts := make(map[string]int)
 	for _, status := range statuses {
 		counts[status.Status]++
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), displayState(status.Status, false), displayRevision(status))
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), status.ModelInvocation, displayState(status.Status, false), displayRevision(status))
 	}
 	if err := writer.Flush(); err != nil {
 		return err

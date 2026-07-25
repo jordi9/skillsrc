@@ -18,6 +18,7 @@ commit = "0123456789abcdef0123456789abcdef01234567"
 name = "one"
 path = "skills/one"
 hash = "sha256:..."
+disable_model_invocation = true # only when disabled by the source
 ```
 
 - `identity` is the normalized repository identity used for matching and caching.
@@ -38,7 +39,7 @@ path = "private-skill"
 hash = "sha256:..."
 ```
 
-For both kinds, each skill records its selected `name`, discovered source-relative `path` (`.` when the source root is the skill), and deterministic content `hash`.
+For both kinds, each skill records its selected `name`, discovered source-relative `path` (`.` when the source root is the skill), and deterministic content `hash`. The optional `disable_model_invocation` flag records that the source skill already disables model invocation, allowing `list` to distinguish source behavior from a manifest override.
 
 ## Determinism
 

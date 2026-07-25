@@ -567,7 +567,16 @@ func resolveDiscoveredSource(root string, lockSource LockSource, selected []stri
 		if err != nil {
 			return resolvedSource{}, err
 		}
-		lockSource.Skills = append(lockSource.Skills, LockedSkill{Name: name, Path: discovered.Path, Hash: hash})
+		sourceDisablesModels, err := sourceDisablesModelInvocation(sourceDir)
+		if err != nil {
+			return resolvedSource{}, err
+		}
+		lockSource.Skills = append(lockSource.Skills, LockedSkill{
+			Name:                          name,
+			Path:                          discovered.Path,
+			Hash:                          hash,
+			SourceDisablesModelInvocation: sourceDisablesModels,
+		})
 	}
 	return resolvedSource{lock: lockSource, root: root}, nil
 }

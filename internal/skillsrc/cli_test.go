@@ -65,6 +65,7 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	var statuses []SkillStatus
 	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
 	require.Len(t, statuses, 1)
+	assert.Equal(t, "enabled", statuses[0].ModelInvocation)
 	assert.Equal(t, "current", statuses[0].Status)
 
 	output.Reset()
@@ -90,13 +91,15 @@ func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
 	assert.Contains(t, output.String(), "1 repository fetched")
 }
 
-func TestListDisplayUsesDecoratedTable(t *testing.T) {
+func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
-	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	makeSkill(t, filepath.Join(local, "enabled"), "enabled", "body")
+	makeSkill(t, filepath.Join(local, "configured"), "configured", "body")
+	writeTestFile(t, filepath.Join(local, "upstream", "SKILL.md"), "---\nname: upstream\ndisable-model-invocation: true\n---\nbody\n")
 	manifest := filepath.Join(root, "skills.toml")
-	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"enabled\",\"!configured\",\"!upstream\"]\n")
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
 	options.Out, options.Err = &output, &errorOutput
@@ -105,7 +108,20 @@ func TestListDisplayUsesDecoratedTable(t *testing.T) {
 	output.Reset()
 	errorOutput.Reset()
 	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
-	assert.Equal(t, "SKILL  SOURCE   STATUS    REVISION\n─────  ──────   ──────    ────────\none    ./local  ✓ synced  local\n\n1 skill · 1 synced\n", output.String())
+	assert.Equal(t, "SKILL       SOURCE   MODEL INVOCATION    STATUS    REVISION\n─────       ──────   ────────────────    ──────    ────────\nconfigured  ./local  disabled by config  ✓ synced  local\nenabled     ./local  enabled             ✓ synced  local\nupstream    ./local  disabled by source  ✓ synced  local\n\n3 skills · 3 synced\n", output.String())
+
+	require.NoError(t, os.RemoveAll(local))
+	require.NoError(t, os.RemoveAll(filepath.Join(options.TargetDir, "upstream")))
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
+	var statuses []SkillStatus
+	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
+	require.Len(t, statuses, 3)
+	assert.Equal(t, "disabled by config", statuses[0].ModelInvocation)
+	assert.Equal(t, "enabled", statuses[1].ModelInvocation)
+	assert.Equal(t, "disabled by source", statuses[2].ModelInvocation)
+	assert.Equal(t, "missing", statuses[2].Status)
 }
 
 func TestListDisplayStylesStatusAndRevisionWhenColorIsEnabled(t *testing.T) {

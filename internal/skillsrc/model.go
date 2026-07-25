@@ -53,9 +53,10 @@ type LockSource struct {
 }
 
 type LockedSkill struct {
-	Name string `toml:"name"`
-	Path string `toml:"path"`
-	Hash string `toml:"hash"`
+	Name                          string `toml:"name"`
+	Path                          string `toml:"path"`
+	Hash                          string `toml:"hash"`
+	SourceDisablesModelInvocation bool   `toml:"disable_model_invocation,omitempty"`
 }
 
 type ValidationError struct{ Problem string }
