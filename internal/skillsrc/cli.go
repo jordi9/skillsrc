@@ -164,7 +164,7 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 				fmt.Fprintf(options.Out, "✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
 			}
 			for _, local := range result.LocalSkipped {
-				fmt.Fprintf(options.Out, "• %s · local source, skipped\n", displaySource(local, runtime.HomeDir))
+				fmt.Fprintf(options.Out, "✓ %s · local content synced\n", displaySource(local, runtime.HomeDir))
 			}
 			printResult(options.Out, "Update complete", result, runtime.HomeDir, true)
 		}
@@ -308,6 +308,7 @@ func displayRevisionMetadata(revision GitRevision) string {
 
 func printOutdated(output io.Writer, result OutdatedResult, home string) {
 	updates := 0
+	localChanges := 0
 	for _, source := range result.Sources {
 		name := displaySource(source.Source, home)
 		if source.Old.Commit == source.New.Commit {
@@ -317,28 +318,45 @@ func printOutdated(output io.Writer, result OutdatedResult, home string) {
 		updates++
 		fmt.Fprintf(output, "↑ %s · %s · update available · %s → %s\n", name, strings.Join(source.Skills, ", "), displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
 	}
-	for _, local := range result.LocalSkipped {
-		fmt.Fprintf(output, "• %s · local source, skipped\n", displaySource(local, home))
+	for _, local := range result.LocalSources {
+		name := displaySource(local.Source, home)
+		if len(local.ChangedSkills) == 0 {
+			fmt.Fprintf(output, "✓ %s · up to date\n", name)
+			continue
+		}
+		localChanges++
+		fmt.Fprintf(output, "• %s · %s · local changes not synced\n", name, strings.Join(local.ChangedSkills, ", "))
 	}
-	if updates == 0 {
-		if len(result.Sources) == 0 && len(result.LocalSkipped) == 0 {
-			fmt.Fprintln(output, "✓ No Git sources to check")
+	if updates == 0 && localChanges == 0 {
+		if len(result.Sources) == 0 && len(result.LocalSources) == 0 {
+			fmt.Fprintln(output, "✓ No sources to check")
 		}
 		return
 	}
 	fmt.Fprintln(output)
-	noun := "updates"
-	if updates == 1 {
-		noun = "update"
+	var summaries []string
+	if updates > 0 {
+		noun := "updates"
+		if updates == 1 {
+			noun = "update"
+		}
+		summaries = append(summaries, fmt.Sprintf("%d %s available", updates, noun))
 	}
-	printSummary(output, fmt.Sprintf("└─ Summary · %d %s available", updates, noun))
+	if localChanges > 0 {
+		noun := "local sources changed"
+		if localChanges == 1 {
+			noun = "local source changed"
+		}
+		summaries = append(summaries, fmt.Sprintf("%d %s", localChanges, noun))
+	}
+	printSummary(output, "└─ Summary · "+strings.Join(summaries, " · "))
 }
 
 func printResult(output io.Writer, label string, result Result, home string, fetchesPrinted bool) {
 	if !fetchesPrinted {
 		printFetches(output, result.Fetches, home)
 	}
-	counts := map[string]int{"installed": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
+	counts := map[string]int{"installed": 0, "updated": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
 	names := map[string][]string{}
 	for _, skill := range result.Skills {
 		counts[skill.Action]++
@@ -346,8 +364,8 @@ func printResult(output io.Writer, label string, result Result, home string, fet
 			names[skill.Action] = append(names[skill.Action], skill.Name)
 		}
 	}
-	actionLabels := map[string]string{"installed": "installed", "repaired": "restored", "pruned": "removed"}
-	for _, action := range []string{"installed", "repaired", "pruned"} {
+	actionLabels := map[string]string{"installed": "installed", "updated": "updated", "repaired": "restored", "pruned": "removed"}
+	for _, action := range []string{"installed", "updated", "repaired", "pruned"} {
 		for _, name := range names[action] {
 			fmt.Fprintf(output, "✓ %s · %s\n", name, actionLabels[action])
 		}
@@ -358,6 +376,7 @@ func printResult(output io.Writer, label string, result Result, home string, fet
 		label string
 	}{
 		{counts["installed"], "installed"},
+		{counts["updated"], "updated"},
 		{counts["repaired"], "restored"},
 		{counts["unchanged"], "up to date"},
 		{counts["pruned"], "removed"},
@@ -787,7 +806,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
 	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add.", "--all                 Add every discovered skill.\n--list                List available skills without changing the manifest.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
 	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
-	{"outdated", "Show available Git updates without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
+	{"outdated", "Show Git updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
 	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--json  Print JSON.", []string{"ls"}},
 	{"doctor", "Diagnose or repair lock, install, cache, and project metadata", "skillsrc [OPTIONS] doctor [OPTIONS]", "None.", "--repair  Repair issues by running sync.\n--json    Print JSON.", nil},

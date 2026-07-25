@@ -53,10 +53,15 @@ type OutdatedSource struct {
 	New    GitRevision
 }
 
+type LocalOutdatedSource struct {
+	Source        string
+	ChangedSkills []string
+}
+
 type OutdatedResult struct {
 	Sources      []OutdatedSource
+	LocalSources []LocalOutdatedSource
 	Fetches      []FetchEvent
-	LocalSkipped []string
 }
 
 type Engine struct{ options Options }
@@ -381,8 +386,8 @@ func (engine *Engine) syncLocked(ctx context.Context, installer *installer) (Res
 	return Result{Fetches: git.Fetches(), Skills: actions}, nil
 }
 
-// Outdated fetches selected Git refs and reports commit changes without
-// modifying the manifest, lockfile, or installed skills.
+// Outdated resolves selected sources and reports Git revisions or local content
+// changes without modifying the manifest, lockfile, or installed skills.
 func (engine *Engine) Outdated(ctx context.Context, selectors []string) (OutdatedResult, error) {
 	manifest, oldLock, err := engine.load()
 	if err != nil {
@@ -394,12 +399,24 @@ func (engine *Engine) Outdated(ctx context.Context, selectors []string) (Outdate
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	var sources []OutdatedSource
+	var localSources []LocalOutdatedSource
 	for index, source := range manifest.Sources {
-		if !selected[index] || source.Path != "" {
+		if !selected[index] {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return OutdatedResult{Fetches: git.Fetches()}, err
+		}
+		if source.Path != "" {
+			current, err := resolveLocalSource(source)
+			if err != nil {
+				return OutdatedResult{Fetches: git.Fetches()}, fmt.Errorf("local source %q: %w", source.Path, err)
+			}
+			localSources = append(localSources, LocalOutdatedSource{
+				Source:        source.Path,
+				ChangedSkills: changedLocalSkills(oldLock, source, current.lock),
+			})
+			continue
 		}
 		repository, err := NormalizeRepository(source.Repo)
 		if err != nil {
@@ -434,9 +451,65 @@ func (engine *Engine) Outdated(ctx context.Context, selectors []string) (Outdate
 	}
 	return OutdatedResult{
 		Sources:      sources,
+		LocalSources: localSources,
 		Fetches:      git.Fetches(),
-		LocalSkipped: selectedLocalSources(manifest, selected),
 	}, nil
+}
+
+func changedLocalSkills(lock Lock, manifestSource ManifestSource, current LockSource) []string {
+	var candidates []*LockSource
+	for index := range lock.Sources {
+		locked := &lock.Sources[index]
+		if locked.Kind == SourceLocal &&
+			locked.Identity == current.Identity &&
+			locked.Path == manifestSource.Path &&
+			selectsExactly(locked.Skills, manifestSource.Skills) {
+			candidates = append(candidates, locked)
+		}
+	}
+	if len(candidates) != 1 {
+		changed := append([]string(nil), manifestSource.Skills...)
+		sort.Strings(changed)
+		return changed
+	}
+
+	currentByName := make(map[string]LockedSkill, len(current.Skills))
+	for _, skill := range current.Skills {
+		currentByName[skill.Name] = skill
+	}
+	lockedByName := make(map[string]LockedSkill, len(candidates[0].Skills))
+	for _, skill := range candidates[0].Skills {
+		lockedByName[skill.Name] = skill
+	}
+	var changed []string
+	for _, name := range manifestSource.Skills {
+		lockedSkill := lockedByName[name]
+		currentSkill := currentByName[name]
+		if lockedSkill.Path != currentSkill.Path ||
+			lockedSkill.Hash != currentSkill.Hash ||
+			lockedSkill.SourceDisablesModelInvocation != currentSkill.SourceDisablesModelInvocation {
+			changed = append(changed, name)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func selectsExactly(locked []LockedSkill, declared []string) bool {
+	if len(locked) != len(declared) {
+		return false
+	}
+	remaining := make(map[string]struct{}, len(declared))
+	for _, name := range declared {
+		remaining[name] = struct{}{}
+	}
+	for _, skill := range locked {
+		if _, ok := remaining[skill.Name]; !ok {
+			return false
+		}
+		delete(remaining, skill.Name)
+	}
+	return len(remaining) == 0
 }
 
 func (engine *Engine) Update(ctx context.Context, selectors []string) (Result, error) {
@@ -603,6 +676,10 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 				dir = filepath.Join(source.root, filepath.FromSlash(skill.Path))
 			}
 			state := installedStatus(installer, engine.options.TargetDir, skill, disabled[skill.Name])
+			oldState := ""
+			if oldSkill, ok := lockSkill(oldLock, skill.Name); ok {
+				oldState = installedStatus(installer, engine.options.TargetDir, oldSkill, disabled[skill.Name])
+			}
 			if err := installer.install(ctx, skill.Name, dir, skill.Hash, disabled[skill.Name]); err != nil {
 				return actions, fmt.Errorf("install %q: %w", skill.Name, err)
 			}
@@ -611,6 +688,8 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 				action = "installed"
 			} else if state == "current" {
 				action = "unchanged"
+			} else if oldState == "current" {
+				action = "updated"
 			}
 			actions = append(actions, SkillAction{Name: skill.Name, Action: action})
 		}
@@ -693,6 +772,17 @@ func lockSkillNames(lock Lock) map[string]struct{} {
 		}
 	}
 	return names
+}
+
+func lockSkill(lock Lock, name string) (LockedSkill, bool) {
+	for _, source := range lock.Sources {
+		for _, skill := range source.Skills {
+			if skill.Name == name {
+				return skill, true
+			}
+		}
+	}
+	return LockedSkill{}, false
 }
 
 func selectUpdates(manifest Manifest, selectors []string) (map[int]bool, error) {

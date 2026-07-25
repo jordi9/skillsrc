@@ -1,6 +1,7 @@
 package skillsrc
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -28,6 +29,11 @@ func TestUpdateFetchesAffectedRepositoryOnceAndReportsCommitChange(t *testing.T)
 	result, err := NewEngine(options).Update(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(result.Fetches))
+	assert.Contains(t, result.Skills, SkillAction{Name: "one", Action: "updated"})
+	var output bytes.Buffer
+	printResult(&output, "Update complete", result, root, true)
+	assert.Contains(t, output.String(), "✓ one · updated")
+	assert.NotContains(t, output.String(), "✓ one · restored")
 	require.Len(t, result.Changes, 1)
 	assert.Equal(t, firstCommit, result.Changes[0].Old)
 	assert.Equal(t, secondCommit, result.Changes[0].New)
@@ -65,6 +71,25 @@ func TestUpdateSkipsLocalSourcesButSyncsTheirCurrentContents(t *testing.T) {
 	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(installed), "second")
+}
+
+func TestCLIUpdateDescribesSelectedLocalSourceAsSynced(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "first")
+	manifest := filepath.Join(root, ".skillsrc")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	makeSkill(t, filepath.Join(local, "one"), "one", "second")
+	var output, errorOutput strings.Builder
+	options.Out, options.Err = &output, &errorOutput
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"update", "one"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "✓ ./local · local content synced")
+	assert.NotContains(t, output.String(), "local source, skipped")
 }
 
 func TestUpdateLeavesCommitPinnedSourceUnchanged(t *testing.T) {

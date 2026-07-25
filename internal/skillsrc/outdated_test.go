@@ -58,7 +58,7 @@ func TestOutdatedReportsRemoteChangeWithoutChangingProjectFiles(t *testing.T) {
 	assert.Equal(t, installedBefore, installedAfter)
 }
 
-func TestOutdatedSkipsLocalSources(t *testing.T) {
+func TestOutdatedReportsUnchangedLocalSourceWithoutChangingProjectFiles(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
@@ -68,12 +68,123 @@ func TestOutdatedSkipsLocalSources(t *testing.T) {
 	options := testOptions(root, manifestPath)
 	_, err := NewEngine(options).Sync(context.Background())
 	require.NoError(t, err)
+	manifestBefore, err := os.ReadFile(options.ManifestPath)
+	require.NoError(t, err)
+	lockBefore, err := os.ReadFile(options.LockPath)
+	require.NoError(t, err)
+	installedPath := filepath.Join(options.TargetDir, "one", "SKILL.md")
+	installedBefore, err := os.ReadFile(installedPath)
+	require.NoError(t, err)
 
 	result, err := NewEngine(options).Outdated(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, result.Fetches)
 	assert.Empty(t, result.Sources)
-	assert.Equal(t, []string{"./local"}, result.LocalSkipped)
+	assert.Equal(t, []LocalOutdatedSource{{Source: "./local"}}, result.LocalSources)
+	manifestAfter, err := os.ReadFile(options.ManifestPath)
+	require.NoError(t, err)
+	lockAfter, err := os.ReadFile(options.LockPath)
+	require.NoError(t, err)
+	installedAfter, err := os.ReadFile(installedPath)
+	require.NoError(t, err)
+	assert.Equal(t, manifestBefore, manifestAfter)
+	assert.Equal(t, lockBefore, lockAfter)
+	assert.Equal(t, installedBefore, installedAfter)
+}
+
+func TestOutdatedReportsChangedLocalSkillsDeterministically(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "zeta"), "zeta", "first")
+	makeSkill(t, filepath.Join(local, "alpha"), "alpha", "first")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"zeta\", \"alpha\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	lockBefore, err := os.ReadFile(options.LockPath)
+	require.NoError(t, err)
+	installedPath := filepath.Join(options.TargetDir, "alpha", "SKILL.md")
+	installedBefore, err := os.ReadFile(installedPath)
+	require.NoError(t, err)
+	makeSkill(t, filepath.Join(local, "zeta"), "zeta", "second")
+	makeSkill(t, filepath.Join(local, "alpha"), "alpha", "second")
+
+	result, err := NewEngine(options).Outdated(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []LocalOutdatedSource{{Source: "./local", ChangedSkills: []string{"alpha", "zeta"}}}, result.LocalSources)
+	lockAfter, err := os.ReadFile(options.LockPath)
+	require.NoError(t, err)
+	installedAfter, err := os.ReadFile(installedPath)
+	require.NoError(t, err)
+	assert.Equal(t, lockBefore, lockAfter)
+	assert.Equal(t, installedBefore, installedAfter)
+}
+
+func TestOutdatedTreatsMissingLocalLockEntryAsChangedAndHonorsSelectors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	makeSkill(t, filepath.Join(first, "one"), "one", "body")
+	makeSkill(t, filepath.Join(second, "two"), "two", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./first\"\nskills=[\"one\"]\n[[sources]]\npath=\"./second\"\nskills=[\"two\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	lock.Sources[1].Skills = nil
+	encoded, err := EncodeLock(lock)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(options.LockPath, encoded, 0o644))
+
+	for _, selector := range []string{"./second", "two"} {
+		result, err := NewEngine(options).Outdated(context.Background(), []string{selector})
+		require.NoError(t, err)
+		assert.Equal(t, []LocalOutdatedSource{{Source: "./second", ChangedSkills: []string{"two"}}}, result.LocalSources)
+	}
+}
+
+func TestOutdatedMatchesDisjointManifestSourcesUsingTheSameLocalPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	makeSkill(t, filepath.Join(local, "two"), "two", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n[[sources]]\npath=\"./local\"\nskills=[\"two\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+
+	result, err := NewEngine(options).Outdated(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []LocalOutdatedSource{{Source: "./local"}, {Source: "./local"}}, result.LocalSources)
+}
+
+func TestOutdatedTreatsInconsistentLocalInvocationMetadataAsChanged(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	writeTestFile(t, filepath.Join(local, "one", "SKILL.md"), "---\nname: one\ndisable-model-invocation: true\n---\nbody\n")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	lock.Sources[0].Skills[0].SourceDisablesModelInvocation = false
+	encoded, err := EncodeLock(lock)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(options.LockPath, encoded, 0o644))
+
+	result, err := NewEngine(options).Outdated(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []LocalOutdatedSource{{Source: "./local", ChangedSkills: []string{"one"}}}, result.LocalSources)
 }
 
 func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
@@ -104,6 +215,31 @@ func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
 	assert.Regexp(t, pattern, output.String())
 	assert.NotContains(t, output.String(), " · fetched")
 	assert.Contains(t, output.String(), "└─ Summary · 1 update available")
+}
+
+func TestCLIOutdatedShowsLocalContentStatus(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "first")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	var output, errorOutput bytes.Buffer
+	options.Out, options.Err = &output, &errorOutput
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "✓ ./local · up to date")
+
+	makeSkill(t, filepath.Join(local, "one"), "one", "second")
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "• ./local · one · local changes not synced")
+	assert.Contains(t, output.String(), "└─ Summary · 1 local source changed")
+	assert.NotContains(t, output.String(), "update available")
 }
 
 func TestDisplayRevisionMetadataPrefersExactTag(t *testing.T) {

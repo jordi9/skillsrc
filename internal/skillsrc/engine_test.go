@@ -168,8 +168,18 @@ func TestSyncRepairsManagedDriftAndPrunesOnlyManagedSkills(t *testing.T) {
 	makeSkill(t, filepath.Join(options.TargetDir, "unmanaged"), "unmanaged", "preserve")
 	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"keep\"]\n")
 
-	if _, err := NewEngine(options).Sync(context.Background()); err != nil {
+	result, err := NewEngine(options).Sync(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	keepRestored := false
+	for _, action := range result.Skills {
+		if action == (SkillAction{Name: "keep", Action: "repaired"}) {
+			keepRestored = true
+		}
+	}
+	if !keepRestored {
+		t.Fatalf("sync actions = %#v, want keep repaired", result.Skills)
 	}
 	content, _ := os.ReadFile(filepath.Join(options.TargetDir, "keep", "SKILL.md"))
 	if !strings.Contains(string(content), "canonical") {

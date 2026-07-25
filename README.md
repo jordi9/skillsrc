@@ -1,6 +1,8 @@
 # skillsrc
 
-**Declarative skill dependencies for `.agents/skills`.** `skillsrc` declares, locks, and safely installs Agent Skills from Git repositories or local directories.
+**Your `.agents`-only skills manager. No abstraction theater.**
+
+> Declare, lock, and safely synchronize skills from Git repos or local directories.
 
 ## Project quick start
 
@@ -111,7 +113,7 @@ Project `init` uses the current directory (not a Git root), refuses nested confi
 
 `sync` reproduces locked Git commits, creates missing lock entries, refreshes local content, installs the declared set, and prunes no-longer-declared managed skills. It does not advance an existing Git lock.
 
-`outdated` fetches configured Git refs and reports each source as up to date or update available without changing the manifest, lockfile, project metadata, or installed skills. Available updates show exact tags when present, otherwise commit dates, alongside short commit hashes. It accepts the same optional repository/path or skill selectors as `update`; local sources are skipped.
+`outdated` fetches configured Git refs and reports each Git source as up to date or update available without changing the manifest, lockfile, project metadata, or installed skills. Available Git updates show exact tags when present, otherwise commit dates, alongside short commit hashes. Selected local sources are resolved read-only and reported as matching the lock or having unsynced content changes. It accepts the same optional repository/path or skill selectors as `update`.
 
 `update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, then performs a sync. Local sources have no remote version; full commit refs remain exact.
 
