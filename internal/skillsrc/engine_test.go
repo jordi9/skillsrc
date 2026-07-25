@@ -1,7 +1,6 @@
 package skillsrc
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -227,7 +226,5 @@ func testOptions(root, manifest string) Options {
 		TargetDir:    filepath.Join(root, "target"),
 		CacheDir:     filepath.Join(root, "cache", "repos"),
 		GitBinary:    "git",
-		Out:          &bytes.Buffer{},
-		Err:          &bytes.Buffer{},
 	}
 }

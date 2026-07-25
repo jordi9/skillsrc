@@ -130,27 +130,16 @@ func isRegularFile(path string) bool {
 }
 
 func skillName(dir string) (string, error) {
-	file, err := os.Open(filepath.Join(dir, "SKILL.md"))
+	lines, err := skillFrontmatterLines(dir)
 	if err != nil {
-		return "", fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+		return "", err
 	}
-	defer file.Close()
-
 	name := ""
-	scanner := bufio.NewScanner(io.LimitReader(file, 64<<10))
-	if scanner.Scan() && strings.TrimSpace(scanner.Text()) == "---" {
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "---" {
-				break
-			}
-			if key, value, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(key) == "name" {
-				name = strings.Trim(strings.TrimSpace(value), `"'`)
-			}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if key, value, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(key) == "name" {
+			name = strings.Trim(strings.TrimSpace(value), `"'`)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("read SKILL.md in %q: %w", dir, err)
 	}
 	if name == "" {
 		name = filepath.Base(dir)
@@ -162,21 +151,11 @@ func skillName(dir string) (string, error) {
 }
 
 func sourceDisablesModelInvocation(dir string) (bool, error) {
-	file, err := os.Open(filepath.Join(dir, "SKILL.md"))
+	lines, err := skillFrontmatterLines(dir)
 	if err != nil {
-		return false, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+		return false, err
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(io.LimitReader(file, 64<<10))
-	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
-		return false, scanner.Err()
-	}
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if strings.TrimSpace(line) == "---" {
-			break
-		}
+	for _, line := range lines {
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
 			continue
 		}
@@ -187,10 +166,32 @@ func sourceDisablesModelInvocation(dir string) (bool, error) {
 		value, _, _ = strings.Cut(value, "#")
 		return strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"'`), "true"), nil
 	}
-	if err := scanner.Err(); err != nil {
-		return false, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
-	}
 	return false, nil
+}
+
+func skillFrontmatterLines(dir string) ([]string, error) {
+	file, err := os.Open(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return nil, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(io.LimitReader(file, 64<<10))
+	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
+		return nil, scanner.Err()
+	}
+	var lines []string
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
+	}
+	return lines, nil
 }
 
 func ValidateRelativeSkillPath(path string) error {

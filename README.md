@@ -107,7 +107,7 @@ skillsrc doctor [--repair] [--json]
 
 Project `init` uses the current directory (not a Git root), refuses nested configuration and initialization directly in `$HOME`, and never overwrites a manifest. `skillsrc -g init` initializes `~/.agents`; `skillsrc --manifest PATH init` initializes exactly that file. Neither creates Git ignore metadata. `add` requires an existing selected manifest.
 
-`add` accepts GitHub shorthand, HTTPS or SSH Git URLs, and local paths beginning with `./`, `../`, `/`, or `~`. GitHub shorthand also accepts the skills CLI's `owner/repository@skill-name` notation to select one skill; use `--ref` separately to select a branch, tag, or commit. Pass `--invoke-user-only` with named skills or `--all` to write them with the `!` shorthand and install them with model invocation disabled. With no skill names, it only lists what the source contains. `--list` makes that intent explicit. Added skills are validated before the manifest changes; `--all` cannot be combined with names.
+`add` accepts GitHub shorthand, HTTPS or SSH Git URLs, and local paths beginning with `./`, `../`, `/`, or `~`. GitHub shorthand also accepts the skills CLI's `owner/repository@skill-name` notation to select one skill; use `--ref` separately to select a branch, tag, or commit. Pass `--invoke-user-only` with named skills or `--all` to write them with the `!` shorthand and install them with model invocation disabled. With no skill names, it only lists what the source contains. Added skills are validated before the manifest changes; `--all` cannot be combined with names.
 
 `remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by this manifest. It does not update the remaining Git sources.
 

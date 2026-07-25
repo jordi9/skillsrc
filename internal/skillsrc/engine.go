@@ -3,9 +3,9 @@ package skillsrc
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -18,8 +18,6 @@ type Options struct {
 	CacheDir     string
 	LockDir      string
 	GitBinary    string
-	Out          io.Writer
-	Err          io.Writer
 }
 
 type Result struct {
@@ -800,7 +798,7 @@ func selectUpdates(manifest Manifest, selectors []string) (map[int]bool, error) 
 			identity = source.Repo
 		}
 		for _, selector := range selectors {
-			if selector == identity || contains(source.Skills, selector) {
+			if selector == identity || slices.Contains(source.Skills, selector) {
 				selected[i] = true
 				matched[selector] = true
 			}
@@ -844,13 +842,4 @@ func lockChanges(oldLock, newLock Lock, selected map[int]bool) []Change {
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Source < changes[j].Source })
 	return changes
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }

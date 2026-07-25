@@ -224,11 +224,6 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 		if _, err := engine.Sync(ctx); err != nil {
 			return DoctorReport{}, fmt.Errorf("repair: %w", err)
 		}
-		if engine.options.ProjectRoot != "" {
-			if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
-				return DoctorReport{}, fmt.Errorf("repair project metadata: %w", err)
-			}
-		}
 	}
 	manifest, lock, err := engine.load()
 	if err != nil {

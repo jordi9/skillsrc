@@ -27,15 +27,19 @@ func TestDefaultCLIOptionsUseRuntimeDirectories(t *testing.T) {
 	assert.Equal(t, "git", options.GitBinary)
 }
 
-func runCLIResolved(ctx context.Context, args []string, options Options) int {
+func runCLIResolved(ctx context.Context, args []string, options Options, writers ...io.Writer) int {
+	output, errorOutput := io.Writer(io.Discard), io.Writer(io.Discard)
+	if len(writers) == 2 {
+		output, errorOutput = writers[0], writers[1]
+	}
 	runtime := CLIOptions{
 		WorkingDir: filepath.Dir(options.ManifestPath),
 		HomeDir:    filepath.Dir(filepath.Dir(options.ManifestPath)),
 		CacheDir:   options.CacheDir,
 		LockDir:    filepath.Join(filepath.Dir(options.TargetDir), ".test-locks"),
 		GitBinary:  options.GitBinary,
-		Out:        options.Out,
-		Err:        options.Err,
+		Out:        output,
+		Err:        errorOutput,
 	}
 	flags := []string{"--manifest", options.ManifestPath, "--lock", options.LockPath, "--target", options.TargetDir}
 	return RunCLI(ctx, append(flags, args...), runtime)
@@ -50,19 +54,18 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "✓ one · installed\n\n└─ Sync complete · 1 installed")
 	assert.NotContains(t, output.String(), "  ✓")
 	assert.NotContains(t, output.String(), "  └─")
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Equal(t, "\n└─ Sync complete · 1 up to date\n", output.String())
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options, &output, &errorOutput), errorOutput.String())
 	var statuses []SkillStatus
 	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
 	require.Len(t, statuses, 1)
@@ -71,7 +74,7 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"doctor", "--json"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"doctor", "--json"}, options, &output, &errorOutput), errorOutput.String())
 	var report DoctorReport
 	require.NoError(t, json.Unmarshal(output.Bytes(), &report))
 	assert.Empty(t, report.Issues)
@@ -85,9 +88,8 @@ func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
 	writeTestFile(t, manifest, "version=1\n[[sources]]\nrepo=\""+remote+"\"\nref=\"main\"\nskills=[\"one\"]\n")
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "↓ "+displaySource(remote, filepath.Dir(root))+" · fetched\n")
 	assert.Contains(t, output.String(), "1 repository fetched")
 }
@@ -107,22 +109,21 @@ func TestListAllIncludesStandaloneUnmanagedSkillsWithoutChangingDefaultList(t *t
 	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"managed\"]\n")
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
 	writeTestFile(t, filepath.Join(options.TargetDir, "manual", "SKILL.md"), "---\nname: manual\ndisable-model-invocation: true\n---\nbody\n")
 	writeTestFile(t, filepath.Join(options.TargetDir, "notes.txt"), "not a skill")
 	require.NoError(t, os.Symlink(filepath.Join(options.TargetDir, "manual"), filepath.Join(options.TargetDir, "linked")))
 
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options, &output, &errorOutput), errorOutput.String())
 	assert.NotContains(t, output.String(), "manual")
 	assert.Contains(t, output.String(), "└─ 1 skill · 1 synced")
 
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "• manual")
 	assert.Contains(t, output.String(), "unmanaged  disabled")
 	assert.NotContains(t, output.String(), "linked")
@@ -131,7 +132,7 @@ func TestListAllIncludesStandaloneUnmanagedSkillsWithoutChangingDefaultList(t *t
 
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all", "--json"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all", "--json"}, options, &output, &errorOutput), errorOutput.String())
 	var statuses []SkillStatus
 	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
 	require.Len(t, statuses, 2)
@@ -152,24 +153,23 @@ func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"enabled\",\"!configured\",\"!upstream\"]\n")
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✓ upstream    ./local  disabled          local\n\n└─ 3 skills · 3 synced\n", output.String())
 
 	require.NoError(t, os.RemoveAll(local))
 	require.NoError(t, os.RemoveAll(filepath.Join(options.TargetDir, "upstream")))
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✗ upstream    ./local  disabled          local\n  └─ missing — locked skill is not installed\n\n└─ 3 skills · 2 synced · 1 missing\n", output.String())
 
 	output.Reset()
 	errorOutput.Reset()
-	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options, &output, &errorOutput), errorOutput.String())
 	var statuses []SkillStatus
 	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
 	require.Len(t, statuses, 3)
@@ -234,13 +234,11 @@ func TestParseAddArgsAcceptsInvokeUserOnlyForSelectedSkills(t *testing.T) {
 	assert.True(t, parsed.userOnly)
 }
 
-func TestParseAddArgsRejectsInvokeUserOnlyWhenOnlyListing(t *testing.T) {
+func TestParseAddArgsRejectsInvokeUserOnlyWithoutSkills(t *testing.T) {
 	t.Parallel()
 
 	_, err := parseAddArgs([]string{"owner/repo", "--invoke-user-only"})
 	assert.EqualError(t, err, "--invoke-user-only requires skill names or --all")
-	_, err = parseAddArgs([]string{"owner/repo", "--list", "--invoke-user-only"})
-	assert.EqualError(t, err, "--invoke-user-only cannot be combined with --list")
 }
 
 func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
@@ -252,9 +250,8 @@ func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
 	writeTestFile(t, manifestPath, "version = 1\n")
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one", "--invoke-user-only"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one", "--invoke-user-only"}, options, &output, &errorOutput), errorOutput.String())
 	manifestBytes, err := os.ReadFile(manifestPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(manifestBytes), `skills = ["!one"]`)
@@ -274,9 +271,8 @@ func TestCLIAddSourceListsAvailableSkillsWithoutChangingManifest(t *testing.T) {
 	require.NoError(t, os.WriteFile(manifest, original, 0o644))
 	options := testOptions(root, manifest)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "Available skills from "+displaySource(local, filepath.Dir(root))+":\n  • one\n  • two\n")
 	actual, err := os.ReadFile(manifest)
 	require.NoError(t, err)
@@ -296,9 +292,8 @@ func TestCLIAddAllFetchesRepositoryOnce(t *testing.T) {
 	writeTestFile(t, manifestPath, "version = 1\n")
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "--all"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "--all"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Equal(t, 1, strings.Count(output.String(), "↓ "+remote+" · fetched\n"), output.String())
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
@@ -309,7 +304,7 @@ func TestCLIAddAllFetchesRepositoryOnce(t *testing.T) {
 
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "two"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "two"}, options, &output, &errorOutput), errorOutput.String())
 	assert.NotContains(t, output.String(), "Fetched ", output.String())
 	assert.FileExists(t, filepath.Join(options.TargetDir, "one", "SKILL.md"))
 	assert.NoDirExists(t, filepath.Join(options.TargetDir, "two"))
@@ -331,8 +326,7 @@ func TestConcurrentAddsPreserveBothDeclarations(t *testing.T) {
 			<-start
 			options := testOptions(root, manifestPath)
 			options.TargetDir = filepath.Join(root, "targets", name)
-			options.Out, options.Err = io.Discard, io.Discard
-			codes <- runCLIResolved(context.Background(), []string{"add", local, name}, options)
+			codes <- runCLIResolved(context.Background(), []string{"add", local, name}, options, io.Discard, io.Discard)
 		}()
 	}
 	close(start)
@@ -368,8 +362,7 @@ func TestConcurrentManifestsCannotOverwriteSharedTarget(t *testing.T) {
 			<-start
 			options := testOptions(manifestDir, manifestPath)
 			options.TargetDir = target
-			options.Out, options.Err = io.Discard, io.Discard
-			outcomes <- outcome{name: name, code: runCLIResolved(context.Background(), []string{"add", local, "shared"}, options)}
+			outcomes <- outcome{name: name, code: runCLIResolved(context.Background(), []string{"add", local, "shared"}, options, io.Discard, io.Discard)}
 		}()
 	}
 	close(start)
@@ -394,9 +387,8 @@ func TestCLIAddKeepsDesiredManifestWhenSyncIsBlocked(t *testing.T) {
 	options := testOptions(root, manifestPath)
 	makeSkill(t, filepath.Join(options.TargetDir, "one"), "one", "unmanaged")
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "one"}, options))
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput))
 	assert.Contains(t, errorOutput.String(), "manifest updated; sync incomplete")
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
@@ -418,9 +410,8 @@ func TestCLIAddUnknownSkillDoesNotChangeManifest(t *testing.T) {
 	require.NoError(t, os.WriteFile(manifestPath, original, 0o644))
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "missing"}, options))
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "missing"}, options, &output, &errorOutput))
 	assert.Contains(t, errorOutput.String(), `selected skill "missing" was not found`)
 	actual, err := os.ReadFile(manifestPath)
 	require.NoError(t, err)
@@ -437,9 +428,8 @@ func TestCLIAddAcceptsTagRefAfterSkillName(t *testing.T) {
 	writeTestFile(t, manifestPath, "version = 1\n")
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", "file://" + remotePath, "one", "--ref", "v1.0.0"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", "file://" + remotePath, "one", "--ref", "v1.0.0"}, options, &output, &errorOutput), errorOutput.String())
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
 	require.Len(t, manifest.Sources, 1)
@@ -458,9 +448,8 @@ func TestCLIAddRequiresExistingManifest(t *testing.T) {
 	manifestPath := filepath.Join(root, "skills.toml")
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "one"}, options))
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput))
 	assert.Contains(t, errorOutput.String(), "init")
 	assert.NoFileExists(t, manifestPath)
 }
@@ -474,9 +463,8 @@ func TestCLIAddAndRemoveLocalSkill(t *testing.T) {
 	writeTestFile(t, manifestPath, "version = 1\n")
 	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "✓ one · installed")
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
@@ -487,7 +475,7 @@ func TestCLIAddAndRemoveLocalSkill(t *testing.T) {
 
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "one"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "one"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "✓ one · removed")
 	manifest, err = LoadManifest(manifestPath)
 	require.NoError(t, err)
@@ -504,7 +492,6 @@ func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {
 	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"../local\"\nskills=[\"one\"]\n")
 	options := testOptions(root, filepath.Join(root, "unused"))
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
 	runtime := CLIOptions{WorkingDir: root, HomeDir: root, CacheDir: options.CacheDir, GitBinary: "git", Out: &output, Err: &errorOutput}
 	code := RunCLI(context.Background(), []string{"--manifest", manifest, "--target", options.TargetDir, "sync"}, runtime)
@@ -557,7 +544,7 @@ func TestCLIHelpInventoriesEveryCommandFlag(t *testing.T) {
 	flags := map[string][]string{
 		"init":     nil,
 		"sync":     nil,
-		"add":      {"--all", "--list", "--ref", "--invoke-user-only"},
+		"add":      {"--all", "--ref", "--invoke-user-only"},
 		"remove":   nil,
 		"outdated": nil,
 		"update":   nil,
@@ -593,7 +580,7 @@ func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) 
 	runtime.Out, runtime.Err = &output, &errorOutput
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"help", "add"}, runtime))
 	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add.\n")
-	for _, option := range []string{"--all", "--list", "--ref", "--invoke-user-only"} {
+	for _, option := range []string{"--all", "--ref", "--invoke-user-only"} {
 		assert.Contains(t, output.String(), "  "+option)
 	}
 	assert.Empty(t, errorOutput.String())
@@ -609,22 +596,21 @@ func TestCLIUsageErrorsAreConcise(t *testing.T) {
 	t.Parallel()
 	options := testOptions(t.TempDir(), "/unused")
 	var output, errorOutput bytes.Buffer
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 2, runCLIResolved(context.Background(), []string{"nope"}, options))
+	assert.Equal(t, 2, runCLIResolved(context.Background(), []string{"nope"}, options, &output, &errorOutput))
 	assert.Contains(t, errorOutput.String(), "Error: unknown command")
 	assert.Equal(t, 1, strings.Count(errorOutput.String(), "Usage:"))
 	assert.NotContains(t, errorOutput.String(), "Commands:")
 
 	errorOutput.Reset()
-	assert.Equal(t, 2, runCLIResolved(context.Background(), []string{"--bad"}, options))
+	assert.Equal(t, 2, runCLIResolved(context.Background(), []string{"--bad"}, options, &output, &errorOutput))
 	assert.Contains(t, errorOutput.String(), "Error: flag provided but not defined: -bad")
 	assert.Equal(t, 1, strings.Count(errorOutput.String(), "Usage:"))
 	assert.NotContains(t, errorOutput.String(), "Commands:")
 
 	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 0, runCLIResolved(context.Background(), nil, options))
+	assert.Equal(t, 0, runCLIResolved(context.Background(), nil, options, &output, &errorOutput))
 	assert.Contains(t, output.String(), "Usage: skillsrc [OPTIONS] <COMMAND>")
 	assert.Contains(t, output.String(), "Commands:")
 	assert.Empty(t, errorOutput.String())

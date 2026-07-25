@@ -130,59 +130,57 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		CacheDir:     *cache,
 		LockDir:      lockDir,
 		GitBinary:    *git,
-		Out:          runtime.Out,
-		Err:          runtime.Err,
 	}
 	engine := NewEngine(options)
 
 	switch command {
 	case "sync":
 		if len(remaining) != 1 {
-			return cliUsageError(options.Err, "sync accepts no arguments")
+			return cliUsageError(runtime.Err, "sync accepts no arguments")
 		}
 		var result Result
 		result, err = engine.Sync(ctx)
 		if err == nil {
-			printResult(options.Out, "Sync complete", result, runtime.HomeDir, false)
+			printResult(runtime.Out, "Sync complete", result, runtime.HomeDir, false)
 		}
 	case "outdated":
 		var result OutdatedResult
 		result, err = engine.Outdated(ctx, remaining[1:])
 		if err == nil {
-			printOutdated(options.Out, result, runtime.HomeDir)
+			printOutdated(runtime.Out, result, runtime.HomeDir)
 		}
 	case "update":
 		var result Result
 		result, err = engine.Update(ctx, remaining[1:])
 		if err == nil {
-			printFetches(options.Out, result.Fetches, runtime.HomeDir)
+			printFetches(runtime.Out, result.Fetches, runtime.HomeDir)
 			for _, change := range result.Changes {
 				old := displayCommit(change.Old)
 				if old == "" {
 					old = "(unlocked)"
 				}
-				fmt.Fprintf(options.Out, "✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
+				fmt.Fprintf(runtime.Out, "✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
 			}
 			for _, local := range result.LocalSkipped {
-				fmt.Fprintf(options.Out, "✓ %s · local content synced\n", displaySource(local, runtime.HomeDir))
+				fmt.Fprintf(runtime.Out, "✓ %s · local content synced\n", displaySource(local, runtime.HomeDir))
 			}
-			printResult(options.Out, "Update complete", result, runtime.HomeDir, true)
+			printResult(runtime.Out, "Update complete", result, runtime.HomeDir, true)
 		}
 	case "add":
-		err = runAddCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
+		err = runAddCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
 	case "remove":
-		err = runRemoveCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
+		err = runRemoveCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
 	case "list":
-		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err, runtime.HomeDir)
+		err = runListCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
 	case "doctor":
 		var issues bool
-		issues, err = runDoctorCLI(ctx, engine, remaining[1:], options.Out, options.Err, runtime.HomeDir)
+		issues, err = runDoctorCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
 		if err == nil && issues {
 			return 1
 		}
 	}
 	if err != nil {
-		printCLIError(options.Err, err.Error(), runtime.HomeDir)
+		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
 		return 1
 	}
 	return 0
@@ -454,7 +452,6 @@ type addArguments struct {
 	skills   []string
 	ref      string
 	all      bool
-	list     bool
 	userOnly bool
 }
 
@@ -468,8 +465,6 @@ func parseAddArgs(args []string) (addArguments, error) {
 		switch {
 		case argument == "--all":
 			parsed.all = true
-		case argument == "--list":
-			parsed.list = true
 		case argument == "--invoke-user-only":
 			parsed.userOnly = true
 		case argument == "--ref":
@@ -498,12 +493,6 @@ func parseAddArgs(args []string) (addArguments, error) {
 	}
 	if parsed.all && len(parsed.skills) > 0 {
 		return parsed, errors.New("--all cannot be combined with skill names")
-	}
-	if parsed.list && (parsed.all || len(parsed.skills) > 0) {
-		return parsed, errors.New("--list cannot be combined with --all or skill names")
-	}
-	if parsed.userOnly && parsed.list {
-		return parsed, errors.New("--invoke-user-only cannot be combined with --list")
 	}
 	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 {
 		return parsed, errors.New("--invoke-user-only requires skill names or --all")
@@ -546,7 +535,7 @@ func addSource(manifestPath, input, ref string) (ManifestSource, error) {
 	return ManifestSource{Path: filepath.ToSlash(stored), ResolvedPath: absolute}, nil
 }
 
-func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer, home string) error {
+func runListCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	includeAll := flags.Bool("all", false, "include standalone unmanaged skills")
@@ -755,7 +744,7 @@ func stateDisplay(state string) (marker, label, colorCode string) {
 	}
 }
 
-func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer, home string) (bool, error) {
+func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) (bool, error) {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	repair := flags.Bool("repair", false, "repair by running sync")
@@ -815,7 +804,7 @@ const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
 var cliCommandSpecs = []cliCommandSpec{
 	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
-	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add.", "--all                 Add every discovered skill.\n--list                List available skills without changing the manifest.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
+	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
 	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
 	{"outdated", "Show Git updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},

@@ -481,30 +481,11 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if current, err := os.ReadFile(path); err == nil && string(current) == string(data) {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".skillsrc-write-")
+	temporaryPath, err := writeSyncedTemp(path, data, mode)
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return err
 	}
@@ -512,36 +493,49 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 }
 
 func writeAtomicNew(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".skillsrc-write-")
+	temporaryPath, err := writeSyncedTemp(path, data, mode)
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
 	// Linking publishes the fully synced file atomically and, unlike Rename,
 	// fails when another initializer has already created the destination.
 	if err := os.Link(temporaryPath, path); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))
+}
+
+func writeSyncedTemp(path string, data []byte, mode os.FileMode) (string, error) {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return "", err
+	}
+	temporary, err := os.CreateTemp(directory, ".skillsrc-write-")
+	if err != nil {
+		return "", err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = temporary.Close()
+			_ = os.Remove(temporary.Name())
+		}
+	}()
+	if err := temporary.Chmod(mode); err != nil {
+		return "", err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		return "", err
+	}
+	if err := temporary.Sync(); err != nil {
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	remove = false
+	return temporary.Name(), nil
 }
 
 func writeFileSynced(path string, data []byte, mode os.FileMode) error {

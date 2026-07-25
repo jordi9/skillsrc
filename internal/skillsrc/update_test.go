@@ -85,9 +85,8 @@ func TestCLIUpdateDescribesSelectedLocalSourceAsSynced(t *testing.T) {
 	require.NoError(t, err)
 	makeSkill(t, filepath.Join(local, "one"), "one", "second")
 	var output, errorOutput strings.Builder
-	options.Out, options.Err = &output, &errorOutput
 
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"update", "one"}, options), errorOutput.String())
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"update", "one"}, options, &output, &errorOutput), errorOutput.String())
 	assert.Contains(t, output.String(), "✓ ./local · local content synced")
 	assert.NotContains(t, output.String(), "local source, skipped")
 }
