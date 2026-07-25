@@ -1,12 +1,14 @@
 package skillsrc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -497,35 +499,92 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(statuses)
 	}
-	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "SKILL\tSOURCE\tREVISION\tSTATUS")
+	if len(statuses) == 0 {
+		_, err := fmt.Fprintln(output, "0 skills configured")
+		return err
+	}
+
+	color := supportsColor(output)
+	var table bytes.Buffer
+	writer := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "SKILL\tSOURCE\tSTATUS\tREVISION")
+	fmt.Fprintln(writer, "─────\t──────\t──────\t────────")
 	counts := make(map[string]int)
 	for _, status := range statuses {
 		counts[status.Status]++
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), displayRevision(status), displayState(status.Status))
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", status.Name, displaySource(status.Source, home), displayState(status.Status, false), displayRevision(status))
 	}
-	fmt.Fprintln(writer)
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
+	tableText := styleListHeader(table.String(), color)
+	if color {
+		tableText = styleListRows(tableText, statuses)
+	}
+	var result strings.Builder
+	result.WriteString(tableText)
+	result.WriteByte('\n')
 	skillNoun := "skills"
 	if len(statuses) == 1 {
 		skillNoun = "skill"
 	}
-	fmt.Fprintf(writer, "%d %s", len(statuses), skillNoun)
+	fmt.Fprintf(&result, "%d %s", len(statuses), skillNoun)
 	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked"} {
 		if counts[state] == 0 {
 			continue
 		}
-		label := state
-		if state == "current" {
-			label = "synced"
-		} else if state == "drifted" {
-			label = "modified"
-		} else if state == "collision" {
-			label = "blocked"
-		}
-		fmt.Fprintf(writer, " · %d %s", counts[state], label)
+		_, label, _ := stateDisplay(state)
+		fmt.Fprintf(&result, " · %d %s", counts[state], label)
 	}
-	fmt.Fprintln(writer)
-	return writer.Flush()
+	result.WriteByte('\n')
+	_, err = io.WriteString(output, result.String())
+	return err
+}
+
+func supportsColor(output io.Writer) bool {
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	file, ok := output.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func styleListHeader(table string, color bool) string {
+	if !color {
+		return table
+	}
+	lines := strings.SplitAfter(table, "\n")
+	if len(lines) >= 2 {
+		lines[0] = "\x1b[1;36m" + strings.TrimSuffix(lines[0], "\n") + "\x1b[0m\n"
+		lines[1] = "\x1b[2;36m" + strings.TrimSuffix(lines[1], "\n") + "\x1b[0m\n"
+	}
+	return strings.Join(lines, "")
+}
+
+func styleListRows(table string, statuses []SkillStatus) string {
+	lines := strings.SplitAfter(table, "\n")
+	for index, status := range statuses {
+		lineIndex := index + 2
+		if lineIndex >= len(lines) {
+			break
+		}
+		line := strings.TrimSuffix(lines[lineIndex], "\n")
+		plainState := displayState(status.Status, false)
+		if stateIndex := strings.LastIndex(line, plainState); stateIndex >= 0 {
+			line = line[:stateIndex] + displayState(status.Status, true) + line[stateIndex+len(plainState):]
+		}
+		revision := displayRevision(status)
+		if strings.HasSuffix(line, revision) {
+			line = strings.TrimSuffix(line, revision) + "\x1b[2m" + revision + "\x1b[0m"
+		}
+		lines[lineIndex] = line + "\n"
+	}
+	return strings.Join(lines, "")
 }
 
 func displaySource(source string, home ...string) string {
@@ -557,18 +616,27 @@ func displayRevision(status SkillStatus) string {
 	return commit
 }
 
-func displayState(state string) string {
+func displayState(state string, color bool) string {
+	marker, label, colorCode := stateDisplay(state)
+	text := marker + " " + label
+	if !color {
+		return text
+	}
+	return colorCode + text + "\x1b[0m"
+}
+
+func stateDisplay(state string) (marker, label, colorCode string) {
 	switch state {
 	case "current":
-		return "✓ synced"
+		return "✓", "synced", "\x1b[32m"
 	case "drifted":
-		return "! modified"
+		return "!", "modified", "\x1b[33m"
 	case "collision":
-		return "! blocked"
+		return "!", "blocked", "\x1b[33m"
 	case "missing":
-		return "✗ missing"
+		return "✗", "missing", "\x1b[31m"
 	default:
-		return "? " + state
+		return "?", state, "\x1b[33m"
 	}
 }
 

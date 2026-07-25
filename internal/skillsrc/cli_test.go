@@ -90,14 +90,31 @@ func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
 	assert.Contains(t, output.String(), "1 repository fetched")
 }
 
-func TestListDisplayIsCompact(t *testing.T) {
+func TestListDisplayUsesDecoratedTable(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "jordi9/skills", displaySource("git@github.com:jordi9/skills"))
-	assert.Equal(t, "owner/repo", displaySource("https://github.com/owner/repo.git"))
-	assert.Equal(t, "main @ 0123456789ab", displayRevision(SkillStatus{ConfiguredRef: "main", LockedCommit: "0123456789abcdef", Status: "current"}))
-	assert.Equal(t, "local", displayRevision(SkillStatus{Status: "current"}))
-	assert.Equal(t, "✓ synced", displayState("current"))
-	assert.Equal(t, "! modified", displayState("drifted"))
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifest)
+	var output, errorOutput bytes.Buffer
+	options.Out, options.Err = &output, &errorOutput
+
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	assert.Equal(t, "SKILL  SOURCE   STATUS    REVISION\n─────  ──────   ──────    ────────\none    ./local  ✓ synced  local\n\n1 skill · 1 synced\n", output.String())
+}
+
+func TestListDisplayStylesStatusAndRevisionWhenColorIsEnabled(t *testing.T) {
+	t.Parallel()
+	statuses := []SkillStatus{{Status: "current", ConfiguredRef: "main", LockedCommit: "0123456789abcdef"}}
+	plain := "SKILL  SOURCE  STATUS    REVISION\n─────  ──────  ──────    ────────\none    source  ✓ synced  main @ 0123456789ab\n"
+	styled := styleListRows(plain, statuses)
+	assert.Contains(t, styled, "\x1b[32m✓ synced\x1b[0m")
+	assert.Contains(t, styled, "\x1b[2mmain @ 0123456789ab\x1b[0m")
 }
 
 func TestParseAddArgsAcceptsSkillsCLISpecifier(t *testing.T) {
