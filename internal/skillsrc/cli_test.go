@@ -41,7 +41,7 @@ func runCLIResolved(ctx context.Context, args []string, options Options, writers
 		Out:        output,
 		Err:        errorOutput,
 	}
-	flags := []string{"--manifest", options.ManifestPath, "--lock", options.LockPath, "--target", options.TargetDir}
+	flags := []string{"--manifest", options.ManifestPath, "--lock", options.LockPath}
 	return RunCLI(ctx, append(flags, args...), runtime)
 }
 
@@ -325,7 +325,6 @@ func TestConcurrentAddsPreserveBothDeclarations(t *testing.T) {
 		go func() {
 			<-start
 			options := testOptions(root, manifestPath)
-			options.TargetDir = filepath.Join(root, "targets", name)
 			codes <- runCLIResolved(context.Background(), []string{"add", local, name}, options, io.Discard, io.Discard)
 		}()
 	}
@@ -342,12 +341,12 @@ func TestConcurrentAddsPreserveBothDeclarations(t *testing.T) {
 	require.Len(t, lock.Sources[0].Skills, 2)
 }
 
-func TestConcurrentManifestsCannotOverwriteSharedTarget(t *testing.T) {
+func TestConcurrentManifestsUseTheirOwnAgentsTargets(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "shared-target")
 	type outcome struct {
-		name string
-		code int
+		name   string
+		target string
+		code   int
 	}
 	start := make(chan struct{})
 	outcomes := make(chan outcome, 2)
@@ -361,20 +360,17 @@ func TestConcurrentManifestsCannotOverwriteSharedTarget(t *testing.T) {
 		go func() {
 			<-start
 			options := testOptions(manifestDir, manifestPath)
-			options.TargetDir = target
-			outcomes <- outcome{name: name, code: runCLIResolved(context.Background(), []string{"add", local, "shared"}, options, io.Discard, io.Discard)}
+			outcomes <- outcome{name: name, target: options.TargetDir, code: runCLIResolved(context.Background(), []string{"add", local, "shared"}, options, io.Discard, io.Discard)}
 		}()
 	}
 	close(start)
-	first, second := <-outcomes, <-outcomes
-	assert.ElementsMatch(t, []int{0, 1}, []int{first.code, second.code})
-	winner := first.name
-	if second.code == 0 {
-		winner = second.name
+	for range 2 {
+		result := <-outcomes
+		assert.Equal(t, 0, result.code)
+		content, err := os.ReadFile(filepath.Join(result.target, "shared", "SKILL.md"))
+		require.NoError(t, err)
+		assert.Contains(t, string(content), result.name)
 	}
-	content, err := os.ReadFile(filepath.Join(target, "shared", "SKILL.md"))
-	require.NoError(t, err)
-	assert.Contains(t, string(content), winner)
 }
 
 func TestCLIAddKeepsDesiredManifestWhenSyncIsBlocked(t *testing.T) {
@@ -494,7 +490,7 @@ func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {
 	var output, errorOutput bytes.Buffer
 
 	runtime := CLIOptions{WorkingDir: root, HomeDir: root, CacheDir: options.CacheDir, GitBinary: "git", Out: &output, Err: &errorOutput}
-	code := RunCLI(context.Background(), []string{"--manifest", manifest, "--target", options.TargetDir, "sync"}, runtime)
+	code := RunCLI(context.Background(), []string{"--manifest", manifest, "sync"}, runtime)
 	assert.Equal(t, 0, code, errorOutput.String())
 	assert.FileExists(t, filepath.Join(filepath.Dir(manifest), "skills.lock"))
 }
@@ -590,6 +586,35 @@ func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) 
 	assert.Equal(t, 2, RunCLI(context.Background(), []string{"help", "unknown"}, runtime))
 	assert.Empty(t, output.String())
 	assert.Contains(t, errorOutput.String(), `unknown command "unknown"`)
+}
+
+func TestCLIVersionDoesNotRequireConfiguration(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Version: "v1.2.3"}
+	for _, args := range [][]string{{"version"}, {"--version"}} {
+		var output, errorOutput bytes.Buffer
+		runtime.Out, runtime.Err = &output, &errorOutput
+
+		assert.Equal(t, 0, RunCLI(context.Background(), args, runtime))
+		assert.Equal(t, "skillsrc v1.2.3\n", output.String())
+		assert.Empty(t, errorOutput.String())
+	}
+
+	var output, errorOutput bytes.Buffer
+	runtime.Out, runtime.Err = &output, &errorOutput
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"version", "--help"}, runtime))
+	assert.Contains(t, output.String(), "Usage: skillsrc version")
+	assert.Empty(t, errorOutput.String())
+}
+
+func TestCLITargetOverrideIsRejected(t *testing.T) {
+	t.Parallel()
+	var output, errorOutput bytes.Buffer
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Out: &output, Err: &errorOutput}
+
+	assert.Equal(t, 2, RunCLI(context.Background(), []string{"--target", "/tmp/skills", "sync"}, runtime))
+	assert.Empty(t, output.String())
+	assert.Contains(t, errorOutput.String(), "flag provided but not defined: -target")
 }
 
 func TestCLIUsageErrorsAreConcise(t *testing.T) {

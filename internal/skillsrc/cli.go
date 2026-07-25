@@ -24,15 +24,15 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	global := flag.NewFlagSet("skillsrc", flag.ContinueOnError)
 	global.SetOutput(io.Discard)
-	var user, help bool
+	var user, help, showVersion bool
 	global.BoolVar(&help, "h", false, "print help")
 	global.BoolVar(&help, "help", false, "print help")
+	global.BoolVar(&showVersion, "version", false, "print version")
 	global.BoolVar(&user, "g", false, "use the user-level configuration")
 	global.BoolVar(&user, "global", false, "use the user-level configuration")
 	global.BoolVar(&user, "user", false, "use the user-level configuration")
 	manifest := global.String("manifest", "", "use an exact manifest path")
 	lock := global.String("lock", "", "override the lockfile path")
-	target := global.String("target", "", "override the installation target")
 	cache := global.String("cache", runtime.CacheDir, "repository cache")
 	git := global.String("git", runtime.GitBinary, "git executable")
 	global.Usage = func() {}
@@ -41,6 +41,10 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	if help {
 		printUsage(runtime.Out)
+		return 0
+	}
+	if showVersion {
+		printVersion(runtime.Out, runtime.Version)
 		return 0
 	}
 	remaining := global.Args()
@@ -72,6 +76,13 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		return 0
 	}
 	command = spec.name
+	if command == "version" {
+		if len(remaining) != 1 {
+			return cliUsageError(runtime.Err, "version accepts no arguments")
+		}
+		printVersion(runtime.Out, runtime.Version)
+		return 0
+	}
 	explicit := make(map[string]bool)
 	global.Visit(func(found *flag.Flag) { explicit[found.Name] = true })
 	manifestExplicit := explicit["manifest"]
@@ -82,8 +93,6 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		ManifestExplicit: manifestExplicit,
 		LockPath:         *lock,
 		LockExplicit:     explicit["lock"],
-		TargetDir:        *target,
-		TargetExplicit:   explicit["target"],
 	}
 	if request.User && request.ManifestExplicit {
 		return cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest")
@@ -779,6 +788,13 @@ func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output io.
 	return len(report.Issues) > 0, nil
 }
 
+func printVersion(output io.Writer, version string) {
+	if version == "" {
+		version = "dev"
+	}
+	fmt.Fprintf(output, "skillsrc %s\n", version)
+}
+
 func cliUsageError(output io.Writer, message string) int {
 	fmt.Fprintf(output, "Error: %s\n\n", message)
 	fmt.Fprintln(output, "Usage: skillsrc [OPTIONS] <COMMAND>")
@@ -796,10 +812,10 @@ const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
       --user          Alias for --global
       --manifest PATH Use the skills.toml at PATH instead of searching parent directories
       --lock PATH     Override the lockfile path
-      --target PATH   Override the installation directory
       --cache PATH    Override the Git repository cache
       --git PATH      Override the Git executable
-  -h, --help          Print help`
+  -h, --help          Print help
+      --version       Print version`
 
 var cliCommandSpecs = []cliCommandSpec{
 	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
@@ -810,6 +826,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
 	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--all   Include standalone unmanaged skills.\n--json  Print JSON.", []string{"ls"}},
 	{"doctor", "Diagnose or repair lock, install, cache, and project metadata", "skillsrc [OPTIONS] doctor [OPTIONS]", "None.", "--repair  Repair issues by running sync.\n--json    Print JSON.", nil},
+	{"version", "Print version", "skillsrc version", "None.", "None.", nil},
 }
 
 func commandSpecFor(name string) (cliCommandSpec, bool) {
@@ -835,7 +852,7 @@ func printUsage(output io.Writer) {
 		}
 		commands.WriteByte('\n')
 	}
-	fmt.Fprintf(output, strings.TrimSpace(`skillsrc — Declarative skill dependencies for .agents/skills
+	fmt.Fprintf(output, strings.TrimSpace(`skillsrc — Your .agents-only skills manager. No abstraction theater.
 
 Usage: skillsrc [OPTIONS] <COMMAND>
 
@@ -853,10 +870,10 @@ Scope selection:
 
 Options:
       --lock PATH    Override the lockfile path
-      --target PATH  Override the installation directory
       --cache PATH   Override the Git repository cache
       --git PATH     Override the Git executable
   -h, --help         Print help
+      --version      Print version
 
 Run 'skillsrc help <COMMAND>' for command details.`), commands.String())
 	fmt.Fprintln(output)

@@ -29,7 +29,7 @@ func TestDoctorReportsAndRepairsProjectMetadata(t *testing.T) {
 	assert.Contains(t, string(rootMetadata), ".skillsrc-install.lock")
 	lockEntries, err := os.ReadDir(filepath.Join(filepath.Dir(options.CacheDir), "locks"))
 	require.NoError(t, err)
-	assert.Len(t, lockEntries, 1)
+	assert.Len(t, lockEntries, 2)
 
 	require.NoError(t, os.Remove(filepath.Join(root, ".gitignore")))
 	writeTestFile(t, filepath.Join(root, ".agents", ".gitignore"), "stale\n")

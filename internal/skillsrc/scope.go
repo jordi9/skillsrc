@@ -6,8 +6,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 )
+
+var Version = "dev"
+
+func effectiveVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return Version
+}
 
 type CLIOptions struct {
 	WorkingDir string
@@ -15,6 +28,7 @@ type CLIOptions struct {
 	CacheDir   string
 	LockDir    string
 	GitBinary  string
+	Version    string
 	Out        io.Writer
 	Err        io.Writer
 }
@@ -25,8 +39,6 @@ type ScopeRequest struct {
 	ManifestExplicit bool
 	LockPath         string
 	LockExplicit     bool
-	TargetDir        string
-	TargetExplicit   bool
 }
 
 type Layout struct {
@@ -55,6 +67,7 @@ func DefaultCLIOptions() (CLIOptions, error) {
 		CacheDir:   filepath.Join(cacheDir, "skillsrc", "repos"),
 		LockDir:    filepath.Join(cacheDir, "skillsrc", "locks"),
 		GitBinary:  "git",
+		Version:    effectiveVersion(),
 		Out:        os.Stdout,
 		Err:        os.Stderr,
 	}, nil
@@ -174,11 +187,7 @@ func derivedLayout(projectRoot, manifest, defaultTarget, workingDir string, requ
 	if request.LockExplicit {
 		lockPath = resolveFromWorkingDir(request.LockPath, workingDir)
 	}
-	targetDir := defaultTarget
-	if request.TargetExplicit {
-		targetDir = resolveFromWorkingDir(request.TargetDir, workingDir)
-	}
-	return Layout{ProjectRoot: projectRoot, ManifestPath: manifest, LockPath: lockPath, TargetDir: targetDir}
+	return Layout{ProjectRoot: projectRoot, ManifestPath: manifest, LockPath: lockPath, TargetDir: defaultTarget}
 }
 
 func resolveFromWorkingDir(path, base string) string {

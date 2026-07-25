@@ -223,7 +223,7 @@ func testOptions(root, manifest string) Options {
 	return Options{
 		ManifestPath: manifest,
 		LockPath:     filepath.Join(filepath.Dir(manifest), "skills.lock"),
-		TargetDir:    filepath.Join(root, "target"),
+		TargetDir:    filepath.Join(filepath.Dir(manifest), ".agents", "skills"),
 		CacheDir:     filepath.Join(root, "cache", "repos"),
 		GitBinary:    "git",
 	}

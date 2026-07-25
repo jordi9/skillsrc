@@ -4,6 +4,14 @@
 
 > Declare, lock, and safely synchronize skills from Git repos or local directories.
 
+`skillsrc` gives `.agents/skills` dependency semantics: reviewable declarations, deterministic locks, exact restoration, drift diagnosis, and ownership-aware installs that refuse to overwrite unmanaged content.
+
+## Scope
+
+`skillsrc` supports macOS and Linux and installs only to `.agents/skills`. Other agent-specific destinations and compatibility layers are deliberate non-goals.
+
+The project is pre-1.0 and maintained on a best-effort basis.
+
 ## Project quick start
 
 Project-local configuration is the default:
@@ -49,7 +57,7 @@ skillsrc --manifest PATH sync  # exact manifest; no discovery
 
 User-level configuration must be initialized explicitly with `skillsrc -g init`. Existing files in `~/.agents` are not migrated or changed by project commands.
 
-`--manifest` derives `skills.lock` and `.agents/skills` beside the selected manifest. `--lock` and `--target` override those paths. Explicit-manifest and user-level commands do not manage repository Git ignore files. `--manifest` cannot be combined with `-g`, `--global`, or `--user`. Global flags must appear before the command.
+`--manifest` derives `skills.lock` and `.agents/skills` beside the selected manifest. `--lock` overrides the lockfile path. Explicit-manifest and user-level commands do not manage repository Git ignore files. `--manifest` cannot be combined with `-g`, `--global`, or `--user`. Global flags must appear before the command.
 
 The Git cache defaults to the OS user cache directory plus `skillsrc/repos` (for example, `~/Library/Caches/skillsrc/repos`) and can be overridden with `--cache`.
 
@@ -103,6 +111,7 @@ skillsrc outdated [source-or-skill ...]
 skillsrc update [source-or-skill ...]
 skillsrc list [--all] [--json]
 skillsrc doctor [--repair] [--json]
+skillsrc version
 ```
 
 Project `init` uses the current directory (not a Git root), refuses nested configuration and initialization directly in `$HOME`, and never overwrites a manifest. `skillsrc -g init` initializes `~/.agents`; `skillsrc --manifest PATH init` initializes exactly that file. Neither creates Git ignore metadata. `add` requires an existing selected manifest.
@@ -127,9 +136,13 @@ Each installed skill contains `.skillsrc-managed.json`, tied to the manifest tha
 
 Installs use staging directories, backups, and transaction journals. The next mutating operation automatically recovers an interrupted replacement or prune. Use `skillsrc doctor` to report lock, install, cache, and project Git ignore problems; `skillsrc doctor --repair` restores repairable installation and project metadata. Unmanaged collisions must be resolved by the user.
 
+### Trust model
+
+Locks and hashes make installation reproducible; they do not make upstream skill instructions trustworthy. Review sources and lockfile changes before installing or updating them. See [SECURITY.md](SECURITY.md) for vulnerability reporting and the full trust boundary.
+
 ## Install or build
 
-A working `git` executable is the only runtime dependency.
+A working `git` executable is the only runtime dependency. Building from source requires Go 1.24 or newer.
 
 ```sh
 go install github.com/jordi9/skillsrc/cmd/skillsrc@latest
@@ -142,3 +155,18 @@ make install
 ```
 
 Release packaging is described in [docs/release-plan.md](docs/release-plan.md).
+
+## Release
+
+Releases are tag-driven. After pushing `main`, preview or publish a semantic version with:
+
+```sh
+./release.sh --dry-run
+./release.sh
+```
+
+The script finds the latest release and asks whether the next version is patch, minor, or major. Pushing the calculated tag triggers verification, four macOS/Linux builds, checksums, git-cliff release notes, and the GitHub Release.
+
+## Contributing and license
+
+Focused contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). `skillsrc` is available under the [MIT License](LICENSE).

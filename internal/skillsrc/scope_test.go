@@ -70,12 +70,12 @@ func TestResolveLayoutProjectAndExplicitOverrides(t *testing.T) {
 
 	explicit := filepath.Join(home, "other", "custom.toml")
 	writeTestFile(t, explicit, "version = 1\n")
-	layout, err = ResolveLayout(ScopeRequest{ManifestPath: explicit, ManifestExplicit: true, LockPath: filepath.Join(home, "locks", "x.lock"), LockExplicit: true, TargetDir: filepath.Join(home, "target"), TargetExplicit: true}, runtime)
+	layout, err = ResolveLayout(ScopeRequest{ManifestPath: explicit, ManifestExplicit: true, LockPath: filepath.Join(home, "locks", "x.lock"), LockExplicit: true}, runtime)
 	require.NoError(t, err)
 	assert.Empty(t, layout.ProjectRoot)
 	assert.Equal(t, explicit, layout.ManifestPath)
 	assert.Equal(t, filepath.Join(home, "locks", "x.lock"), layout.LockPath)
-	assert.Equal(t, filepath.Join(home, "target"), layout.TargetDir)
+	assert.Equal(t, filepath.Join(home, "other", ".agents", "skills"), layout.TargetDir)
 }
 
 func TestResolveLayoutUserAndConflict(t *testing.T) {
