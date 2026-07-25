@@ -22,7 +22,6 @@ type Options struct {
 }
 
 type Result struct {
-	Acquisitions int           `json:"acquisitions"`
 	Fetches      []FetchEvent  `json:"fetches,omitempty"`
 	Skills       []SkillAction `json:"skills,omitempty"`
 	Changes      []Change      `json:"changes,omitempty"`
@@ -79,7 +78,7 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	available, err := engine.discover(ctx, source, git)
-	result := Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches()}
+	result := Result{Fetches: git.Fetches()}
 	if err != nil {
 		return nil, result, err
 	}
@@ -129,7 +128,7 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		return available, result, err
 	}
 	resolved, err := engine.resolve(ctx, manifest, oldLock, git, nil, false)
-	result.Acquisitions, result.Fetches = git.Acquisitions(), git.Fetches()
+	result.Fetches = git.Fetches()
 	if err != nil {
 		return available, result, err
 	}
@@ -198,7 +197,7 @@ func (engine *Engine) removeLocked(ctx context.Context, installer *installer, na
 	filteredLock := lockForManifest(oldLock, manifest)
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	resolved, err := engine.resolve(ctx, manifest, filteredLock, git, nil, false)
-	result := Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches()}
+	result := Result{Fetches: git.Fetches()}
 	if err != nil {
 		return result, err
 	}
@@ -295,7 +294,7 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 func (engine *Engine) Discover(ctx context.Context, source ManifestSource) ([]string, Result, error) {
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	names, err := engine.discover(ctx, source, git)
-	return names, Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches()}, err
+	return names, Result{Fetches: git.Fetches()}, err
 }
 
 func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *GitOperation) ([]string, error) {
@@ -350,14 +349,14 @@ func (engine *Engine) syncLocked(ctx context.Context, installer *installer) (Res
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	resolved, err := engine.resolve(ctx, manifest, oldLock, git, nil, false)
 	if err != nil {
-		return Result{Acquisitions: git.Acquisitions()}, err
+		return Result{Fetches: git.Fetches()}, err
 	}
 	newLock := lockFromResolved(resolved)
 	actions, err := engine.applyLocked(ctx, installer, oldLock, newLock, resolved)
 	if err != nil {
-		return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions}, err
+		return Result{Fetches: git.Fetches(), Skills: actions}, err
 	}
-	return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions}, nil
+	return Result{Fetches: git.Fetches(), Skills: actions}, nil
 }
 
 func (engine *Engine) Update(ctx context.Context, selectors []string) (Result, error) {
@@ -383,16 +382,16 @@ func (engine *Engine) updateLocked(ctx context.Context, installer *installer, se
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	resolved, err := engine.resolve(ctx, manifest, oldLock, git, selected, true)
 	if err != nil {
-		return Result{Acquisitions: git.Acquisitions()}, err
+		return Result{Fetches: git.Fetches()}, err
 	}
 	newLock := lockFromResolved(resolved)
 	changes := lockChanges(oldLock, newLock, selected)
 	locals := selectedLocalSources(manifest, selected)
 	actions, err := engine.applyLocked(ctx, installer, oldLock, newLock, resolved)
 	if err != nil {
-		return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, err
+		return Result{Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, err
 	}
-	return Result{Acquisitions: git.Acquisitions(), Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, nil
+	return Result{Fetches: git.Fetches(), Skills: actions, Changes: changes, LocalSkipped: locals}, nil
 }
 
 func (engine *Engine) load() (Manifest, Lock, error) {

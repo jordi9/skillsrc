@@ -27,7 +27,7 @@ func TestUpdateFetchesAffectedRepositoryOnceAndReportsCommitChange(t *testing.T)
 
 	result, err := NewEngine(options).Update(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Equal(t, 1, result.Acquisitions)
+	assert.Equal(t, 1, len(result.Fetches))
 	require.Len(t, result.Changes, 1)
 	assert.Equal(t, firstCommit, result.Changes[0].Old)
 	assert.Equal(t, secondCommit, result.Changes[0].New)
@@ -55,7 +55,7 @@ func TestUpdateSkipsLocalSourcesButSyncsTheirCurrentContents(t *testing.T) {
 
 	result, err := NewEngine(options).Update(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Zero(t, result.Acquisitions)
+	assert.Zero(t, len(result.Fetches))
 	assert.Equal(t, []string{"./local"}, result.LocalSkipped)
 	after, err := LoadLock(options.LockPath)
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestUpdateLeavesCommitPinnedSourceUnchanged(t *testing.T) {
 
 	result, err := NewEngine(options).Update(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Zero(t, result.Acquisitions)
+	assert.Zero(t, len(result.Fetches))
 	assert.Empty(t, result.Changes)
 	lock, err := LoadLock(options.LockPath)
 	require.NoError(t, err)

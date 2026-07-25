@@ -26,14 +26,14 @@ func TestGitOperationAcquiresEachRepositoryOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != commitOne || second != commitOne || op.Acquisitions() != 1 {
-		t.Fatalf("same repository: commits %q/%q, acquisitions %d", first, second, op.Acquisitions())
+	if first != commitOne || second != commitOne || len(op.Fetches()) != 1 {
+		t.Fatalf("same repository: commits %q/%q, fetches %d", first, second, len(op.Fetches()))
 	}
 	if _, err := op.Resolve(ctx, remoteTwo, "main", true, ""); err != nil {
 		t.Fatal(err)
 	}
-	if op.Acquisitions() != 2 {
-		t.Fatalf("two repositories caused %d acquisitions, want 2", op.Acquisitions())
+	if len(op.Fetches()) != 2 {
+		t.Fatalf("two repositories caused %d fetches, want 2", len(op.Fetches()))
 	}
 }
 
@@ -69,8 +69,8 @@ func TestGitOperationCachedCommitNeedsNoFetch(t *testing.T) {
 	if _, err := second.Resolve(ctx, remote, "main", false, commit); err != nil {
 		t.Fatal(err)
 	}
-	if second.Acquisitions() != 0 {
-		t.Fatalf("cached exact commit caused %d acquisitions", second.Acquisitions())
+	if len(second.Fetches()) != 0 {
+		t.Fatalf("cached exact commit caused %d fetches", len(second.Fetches()))
 	}
 }
 
@@ -91,8 +91,8 @@ func TestGitOperationFailedAcquisitionDoesNotPoisonCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != commit || second.Acquisitions() != 1 {
-		t.Fatalf("recovery commit %q acquisitions %d", got, second.Acquisitions())
+	if got != commit || len(second.Fetches()) != 1 {
+		t.Fatalf("recovery commit %q fetches %d", got, len(second.Fetches()))
 	}
 }
 

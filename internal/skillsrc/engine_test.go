@@ -27,8 +27,8 @@ skills=["private-workflow"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Acquisitions != 0 {
-		t.Fatalf("local sync acquisitions = %d", result.Acquisitions)
+	if len(result.Fetches) != 0 {
+		t.Fatalf("local sync fetches = %d", len(result.Fetches))
 	}
 	if _, err := os.Stat(options.CacheDir); !os.IsNotExist(err) {
 		t.Fatalf("local source wrote cache %q: %v", options.CacheDir, err)
@@ -131,15 +131,15 @@ func TestSyncGitSourceFetchesOnceForManySkillsThenZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Acquisitions != 1 {
-		t.Fatalf("first sync acquisitions = %d", first.Acquisitions)
+	if len(first.Fetches) != 1 {
+		t.Fatalf("first sync fetches = %d", len(first.Fetches))
 	}
 	second, err := NewEngine(options).Sync(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Acquisitions != 0 {
-		t.Fatalf("unchanged sync acquisitions = %d", second.Acquisitions)
+	if len(second.Fetches) != 0 {
+		t.Fatalf("unchanged sync fetches = %d", len(second.Fetches))
 	}
 }
 

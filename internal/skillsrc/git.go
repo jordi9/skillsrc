@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -46,12 +45,11 @@ type acquiredRepository struct {
 }
 
 type GitOperation struct {
-	cacheDir     string
-	git          string
-	acquired     map[string]*acquiredRepository
-	acquisitions int
-	fetches      []FetchEvent
-	cleaned      bool
+	cacheDir string
+	git      string
+	acquired map[string]*acquiredRepository
+	fetches  []FetchEvent
+	cleaned  bool
 }
 
 func NewGitOperation(cacheDir, gitBinary string) *GitOperation {
@@ -60,8 +58,6 @@ func NewGitOperation(cacheDir, gitBinary string) *GitOperation {
 	}
 	return &GitOperation{cacheDir: cacheDir, git: gitBinary, acquired: make(map[string]*acquiredRepository)}
 }
-
-func (operation *GitOperation) Acquisitions() int { return operation.acquisitions }
 
 func (operation *GitOperation) Fetches() []FetchEvent {
 	return append([]FetchEvent(nil), operation.fetches...)
@@ -278,7 +274,6 @@ func (operation *GitOperation) validBareRepository(ctx context.Context, dir, rem
 }
 
 func (operation *GitOperation) fetchAll(ctx context.Context, repository *acquiredRepository) error {
-	operation.acquisitions++
 	_, err := operation.run(ctx, "--git-dir="+repository.dir, "fetch", "--force", "--prune", "--no-recurse-submodules", "origin", "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*", "+HEAD:refs/remotes/origin/HEAD")
 	if err == nil {
 		repository.fetched = true
@@ -287,7 +282,6 @@ func (operation *GitOperation) fetchAll(ctx context.Context, repository *acquire
 }
 
 func (operation *GitOperation) fetchExact(ctx context.Context, repository *acquiredRepository, commit string) error {
-	operation.acquisitions++
 	_, err := operation.run(ctx, "--git-dir="+repository.dir, "fetch", "--force", "--no-tags", "--no-recurse-submodules", "origin", commit+":refs/skillsrc/pins/"+commit)
 	if err != nil {
 		return err
@@ -363,29 +357,11 @@ func (operation *GitOperation) lock(ctx context.Context) (func(), error) {
 	if err := os.MkdirAll(operation.cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
-	file, err := os.OpenFile(filepath.Join(operation.cacheDir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	unlock, err := lockFileContext(ctx, filepath.Join(operation.cacheDir, ".lock"))
 	if err != nil {
-		return nil, fmt.Errorf("open cache lock: %w", err)
+		return nil, fmt.Errorf("lock cache: %w", err)
 	}
-	for {
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() {
-				_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-				_ = file.Close()
-			}, nil
-		}
-		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
-			_ = file.Close()
-			return nil, fmt.Errorf("lock cache: %w", err)
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
-			return nil, ctx.Err()
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
+	return unlock, nil
 }
 
 func extractTar(ctx context.Context, reader io.Reader, destination string) error {
