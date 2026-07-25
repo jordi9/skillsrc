@@ -293,7 +293,7 @@ func printOutdated(output io.Writer, result OutdatedResult, home string) {
 			continue
 		}
 		updates++
-		fmt.Fprintf(output, "  ↑ %s · update available · %s → %s\n", name, displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
+		fmt.Fprintf(output, "  ↑ %s · %s · update available · %s → %s\n", name, strings.Join(source.Skills, ", "), displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
 	}
 	for _, local := range result.LocalSkipped {
 		fmt.Fprintf(output, "  • %s · local source, skipped\n", displaySource(local, home))

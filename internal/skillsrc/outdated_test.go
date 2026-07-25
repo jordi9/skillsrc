@@ -38,6 +38,7 @@ func TestOutdatedReportsRemoteChangeWithoutChangingProjectFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Sources, 1)
 	assert.Equal(t, remote, result.Sources[0].Source)
+	assert.Equal(t, []string{"one"}, result.Sources[0].Skills)
 	assert.Equal(t, firstCommit, result.Sources[0].Old.Commit)
 	assert.Equal(t, secondCommit, result.Sources[0].New.Commit)
 	assert.NotEmpty(t, result.Sources[0].Old.Date)
@@ -80,9 +81,10 @@ func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
 	root := t.TempDir()
 	remote, firstCommit := makeGitRemote(t, map[string]string{
 		"one/SKILL.md": "---\nname: one\n---\nfirst\n",
+		"two/SKILL.md": "---\nname: two\n---\nfirst\n",
 	})
 	manifestPath := filepath.Join(root, "skills.toml")
-	writeTestFile(t, manifestPath, "version=1\n[[sources]]\nrepo=\""+remote+"\"\nref=\"main\"\nskills=[\"one\"]\n")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\nrepo=\""+remote+"\"\nref=\"main\"\nskills=[\"one\", \"two\"]\n")
 	options := testOptions(root, manifestPath)
 	_, err := NewEngine(options).Sync(context.Background())
 	require.NoError(t, err)
@@ -98,7 +100,7 @@ func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
 	errorOutput.Reset()
 	secondCommit := pushGitChange(t, remote, "one/SKILL.md", "---\nname: one\n---\nsecond\n")
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options), errorOutput.String())
-	pattern := `  ↑ ` + regexp.QuoteMeta(displayedSource) + ` · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
+	pattern := `  ↑ ` + regexp.QuoteMeta(displayedSource) + ` · one, two · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
 	assert.Regexp(t, pattern, output.String())
 	assert.NotContains(t, output.String(), " · fetched")
 	assert.Contains(t, output.String(), "  └─ Summary · 1 update available")

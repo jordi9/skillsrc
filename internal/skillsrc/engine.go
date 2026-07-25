@@ -48,6 +48,7 @@ type Change struct {
 
 type OutdatedSource struct {
 	Source string
+	Skills []string
 	Old    GitRevision
 	New    GitRevision
 }
@@ -424,7 +425,12 @@ func (engine *Engine) Outdated(ctx context.Context, selectors []string) (Outdate
 		if err != nil {
 			return OutdatedResult{Fetches: git.Fetches()}, err
 		}
-		sources = append(sources, OutdatedSource{Source: source.Repo, Old: oldRevision, New: newRevision})
+		sources = append(sources, OutdatedSource{
+			Source: source.Repo,
+			Skills: append([]string(nil), source.Skills...),
+			Old:    oldRevision,
+			New:    newRevision,
+		})
 	}
 	return OutdatedResult{
 		Sources:      sources,
