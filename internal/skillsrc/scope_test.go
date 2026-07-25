@@ -102,9 +102,7 @@ func TestResolveLayoutMissingDiagnostics(t *testing.T) {
 	runtime := scopeRuntime(cwd, home)
 
 	_, err := ResolveLayout(ScopeRequest{}, runtime)
-	assert.ErrorContains(t, err, "skillsrc init")
-	assert.ErrorContains(t, err, "--manifest")
-	assert.ErrorContains(t, err, "--global")
+	assert.EqualError(t, err, "no project skills.toml found; run skillsrc init or use --global")
 	_, err = ResolveLayout(ScopeRequest{User: true}, runtime)
 	assert.ErrorContains(t, err, "skillsrc -g init")
 }

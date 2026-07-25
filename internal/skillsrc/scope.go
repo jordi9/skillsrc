@@ -125,7 +125,7 @@ func ResolveLayout(request ScopeRequest, runtime CLIOptions) (Layout, error) {
 	manifest, err := FindProjectManifest(runtime.WorkingDir, runtime.HomeDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Layout{}, errors.New("no project skills.toml found; run skillsrc init, use --manifest PATH, or use --global")
+			return Layout{}, errors.New("no project skills.toml found; run skillsrc init or use --global")
 		}
 		return Layout{}, err
 	}

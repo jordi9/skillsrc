@@ -117,6 +117,16 @@ func TestListDisplayStylesStatusAndRevisionWhenColorIsEnabled(t *testing.T) {
 	assert.Contains(t, styled, "\x1b[2mmain @ 0123456789ab\x1b[0m")
 }
 
+func TestStyleCommandSuggestions(t *testing.T) {
+	t.Parallel()
+	message := "no project skills.toml found; run skillsrc init or use --global"
+	assert.Equal(t, message, styleCommandSuggestions(message, false))
+	assert.Equal(t,
+		"no project skills.toml found; run \x1b[1;36mskillsrc init\x1b[0m or use \x1b[1;36m--global\x1b[0m",
+		styleCommandSuggestions(message, true),
+	)
+}
+
 func TestParseAddArgsAcceptsSkillsCLISpecifier(t *testing.T) {
 	t.Parallel()
 

@@ -168,7 +168,18 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 
 func printCLIError(output io.Writer, message, home string) {
 	message = strings.TrimPrefix(message, "validation: ")
-	fmt.Fprintf(output, "Error: %s\n", displayPathsInText(message, home))
+	message = displayPathsInText(message, home)
+	fmt.Fprintf(output, "Error: %s\n", styleCommandSuggestions(message, supportsColor(output)))
+}
+
+func styleCommandSuggestions(message string, color bool) string {
+	if !color {
+		return message
+	}
+	return strings.NewReplacer(
+		"skillsrc init", "\x1b[1;36mskillsrc init\x1b[0m",
+		"--global", "\x1b[1;36m--global\x1b[0m",
+	).Replace(message)
 }
 
 func displayPath(path, home string) string {
