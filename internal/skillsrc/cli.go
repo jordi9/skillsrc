@@ -45,7 +45,8 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	remaining := global.Args()
 	if len(remaining) == 0 {
-		return cliUsageError(runtime.Err, "command required")
+		printUsage(runtime.Out)
+		return 0
 	}
 	command := remaining[0]
 	if command == "help" {
@@ -73,7 +74,8 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		return cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest")
 	}
 	if autoUserScope {
-		fmt.Fprintln(runtime.Out, "  • ~/.agents · using user scope")
+		line := "• ~/.agents · using user scope"
+		fmt.Fprintln(runtime.Out, styleUserScope(line, supportsColor(runtime.Out)))
 	}
 	if command == "init" {
 		if len(remaining) != 1 {
@@ -93,7 +95,7 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 			printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
 			return 1
 		}
-		fmt.Fprintf(runtime.Out, "  ✓ %s · initialized\n", displayPath(layout.ManifestPath, runtime.HomeDir))
+		fmt.Fprintf(runtime.Out, "✓ %s · initialized\n", displayPath(layout.ManifestPath, runtime.HomeDir))
 		return 0
 	}
 	layout, err := ResolveLayout(request, runtime)
@@ -144,10 +146,10 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 				if old == "" {
 					old = "(unlocked)"
 				}
-				fmt.Fprintf(options.Out, "  ✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
+				fmt.Fprintf(options.Out, "✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
 			}
 			for _, local := range result.LocalSkipped {
-				fmt.Fprintf(options.Out, "  • %s · local source, skipped\n", displaySource(local, runtime.HomeDir))
+				fmt.Fprintf(options.Out, "• %s · local source, skipped\n", displaySource(local, runtime.HomeDir))
 			}
 			printResult(options.Out, "Update complete", result, runtime.HomeDir, true)
 		}
@@ -244,7 +246,7 @@ func printFetches(output io.Writer, fetches []FetchEvent, home string) {
 			}
 			detail += " at " + commit
 		}
-		fmt.Fprintf(output, "  ↓ %s · fetched", displaySource(fetch.Source, home))
+		fmt.Fprintf(output, "↓ %s · fetched", displaySource(fetch.Source, home))
 		if detail != "" {
 			fmt.Fprintf(output, " · %s", detail)
 		}
@@ -294,18 +296,18 @@ func printOutdated(output io.Writer, result OutdatedResult, home string) {
 	for _, source := range result.Sources {
 		name := displaySource(source.Source, home)
 		if source.Old.Commit == source.New.Commit {
-			fmt.Fprintf(output, "  ✓ %s · up to date\n", name)
+			fmt.Fprintf(output, "✓ %s · up to date\n", name)
 			continue
 		}
 		updates++
-		fmt.Fprintf(output, "  ↑ %s · %s · update available · %s → %s\n", name, strings.Join(source.Skills, ", "), displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
+		fmt.Fprintf(output, "↑ %s · %s · update available · %s → %s\n", name, strings.Join(source.Skills, ", "), displayRevisionMetadata(source.Old), displayRevisionMetadata(source.New))
 	}
 	for _, local := range result.LocalSkipped {
-		fmt.Fprintf(output, "  • %s · local source, skipped\n", displaySource(local, home))
+		fmt.Fprintf(output, "• %s · local source, skipped\n", displaySource(local, home))
 	}
 	if updates == 0 {
 		if len(result.Sources) == 0 && len(result.LocalSkipped) == 0 {
-			fmt.Fprintln(output, "  ✓ No Git sources to check")
+			fmt.Fprintln(output, "✓ No Git sources to check")
 		}
 		return
 	}
@@ -314,7 +316,7 @@ func printOutdated(output io.Writer, result OutdatedResult, home string) {
 	if updates == 1 {
 		noun = "update"
 	}
-	fmt.Fprintf(output, "  └─ Summary · %d %s available\n", updates, noun)
+	printSummary(output, fmt.Sprintf("└─ Summary · %d %s available", updates, noun))
 }
 
 func printResult(output io.Writer, label string, result Result, home string, fetchesPrinted bool) {
@@ -330,11 +332,9 @@ func printResult(output io.Writer, label string, result Result, home string, fet
 		}
 	}
 	actionLabels := map[string]string{"installed": "installed", "repaired": "restored", "pruned": "removed"}
-	printedDetails := len(result.Fetches) > 0
 	for _, action := range []string{"installed", "repaired", "pruned"} {
 		for _, name := range names[action] {
-			fmt.Fprintf(output, "  ✓ %s · %s\n", name, actionLabels[action])
-			printedDetails = true
+			fmt.Fprintf(output, "✓ %s · %s\n", name, actionLabels[action])
 		}
 	}
 	var summary []string
@@ -361,10 +361,26 @@ func printResult(output io.Writer, label string, result Result, home string, fet
 	if len(summary) == 0 {
 		summary = append(summary, "no changes")
 	}
-	if printedDetails {
-		fmt.Fprintln(output)
+	fmt.Fprintln(output)
+	printSummary(output, fmt.Sprintf("└─ %s · %s", label, strings.Join(summary, " · ")))
+}
+
+func printSummary(output io.Writer, line string) {
+	fmt.Fprintln(output, styleSummary(line, supportsColor(output)))
+}
+
+func styleSummary(line string, color bool) string {
+	if !color {
+		return line
 	}
-	fmt.Fprintf(output, "  └─ %s · %s\n", label, strings.Join(summary, " · "))
+	return "\x1b[35m" + line + "\x1b[0m"
+}
+
+func styleUserScope(line string, color bool) string {
+	if !color {
+		return line
+	}
+	return "\x1b[34m" + line + "\x1b[0m"
 }
 
 func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
@@ -547,15 +563,16 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	if len(statuses) == 1 {
 		skillNoun = "skill"
 	}
-	fmt.Fprintf(&result, "%d %s", len(statuses), skillNoun)
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "%d %s", len(statuses), skillNoun)
 	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked"} {
 		if counts[state] == 0 {
 			continue
 		}
 		_, label, _ := stateDisplay(state)
-		fmt.Fprintf(&result, " · %d %s", counts[state], label)
+		fmt.Fprintf(&summary, " · %d %s", counts[state], label)
 	}
-	result.WriteByte('\n')
+	fmt.Fprintln(&result, styleSummary("└─ "+summary.String(), color))
 	_, err = io.WriteString(output, result.String())
 	return err
 }
@@ -715,14 +732,14 @@ func runDoctorCLI(ctx context.Context, engine *Engine, args []string, output, er
 			return false, err
 		}
 	} else if len(report.Issues) == 0 {
-		fmt.Fprintln(output, "  ✓ No issues found")
+		fmt.Fprintln(output, "✓ No issues found")
 	} else {
 		for _, issue := range report.Issues {
 			label := issue.Kind
 			if issue.Skill != "" {
 				label += "/" + issue.Skill
 			}
-			fmt.Fprintf(output, "  ! %s · %s\n", label, displayPathsInText(issue.Message, home))
+			fmt.Fprintf(output, "! %s · %s\n", label, displayPathsInText(issue.Message, home))
 		}
 	}
 	return len(report.Issues) > 0, nil

@@ -53,12 +53,13 @@ func TestCLIEndToEndWithJSONListAndDoctor(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
-	assert.Contains(t, output.String(), "  ✓ one · installed")
-	assert.Contains(t, output.String(), "  └─ Sync complete · 1 installed")
+	assert.Contains(t, output.String(), "✓ one · installed\n\n└─ Sync complete · 1 installed")
+	assert.NotContains(t, output.String(), "  ✓")
+	assert.NotContains(t, output.String(), "  └─")
 	output.Reset()
 	errorOutput.Reset()
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
-	assert.Contains(t, output.String(), "  └─ Sync complete · 1 up to date")
+	assert.Equal(t, "\n└─ Sync complete · 1 up to date\n", output.String())
 	output.Reset()
 	errorOutput.Reset()
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--json"}, options), errorOutput.String())
@@ -87,8 +88,14 @@ func TestCLISyncExplainsRepositoryFetch(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
-	assert.Contains(t, output.String(), "  ↓ "+displaySource(remote, filepath.Dir(root))+" · fetched\n")
+	assert.Contains(t, output.String(), "↓ "+displaySource(remote, filepath.Dir(root))+" · fetched\n")
 	assert.Contains(t, output.String(), "1 repository fetched")
+}
+
+func TestStyleSummaryColorsTheWholeLinePink(t *testing.T) {
+	line := "└─ Sync complete · 1 installed"
+	assert.Equal(t, line, styleSummary(line, false))
+	assert.Equal(t, "\x1b[35m"+line+"\x1b[0m", styleSummary(line, true))
 }
 
 func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
@@ -108,14 +115,14 @@ func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 	output.Reset()
 	errorOutput.Reset()
 	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
-	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✓ upstream    ./local  disabled          local\n\n3 skills · 3 synced\n", output.String())
+	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✓ upstream    ./local  disabled          local\n\n└─ 3 skills · 3 synced\n", output.String())
 
 	require.NoError(t, os.RemoveAll(local))
 	require.NoError(t, os.RemoveAll(filepath.Join(options.TargetDir, "upstream")))
 	output.Reset()
 	errorOutput.Reset()
 	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
-	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✗ upstream    ./local  disabled          local\n  └─ missing — locked skill is not installed\n\n3 skills · 2 synced · 1 missing\n", output.String())
+	assert.Equal(t, "SKILL         SOURCE   MODEL INVOCATION  REVISION\n─────         ──────   ────────────────  ────────\n✓ configured  ./local  !disabled         local\n✓ enabled     ./local  enabled           local\n✗ upstream    ./local  disabled          local\n  └─ missing — locked skill is not installed\n\n└─ 3 skills · 2 synced · 1 missing\n", output.String())
 
 	output.Reset()
 	errorOutput.Reset()
@@ -248,7 +255,7 @@ func TestCLIAddAllFetchesRepositoryOnce(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "--all"}, options), errorOutput.String())
-	assert.Equal(t, 1, strings.Count(output.String(), "  ↓ "+remote+" · fetched\n"), output.String())
+	assert.Equal(t, 1, strings.Count(output.String(), "↓ "+remote+" · fetched\n"), output.String())
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
 	require.Len(t, manifest.Sources, 1)
@@ -426,7 +433,7 @@ func TestCLIAddAndRemoveLocalSkill(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options), errorOutput.String())
-	assert.Contains(t, output.String(), "  ✓ one · installed")
+	assert.Contains(t, output.String(), "✓ one · installed")
 	manifest, err := LoadManifest(manifestPath)
 	require.NoError(t, err)
 	require.Len(t, manifest.Sources, 1)
@@ -437,7 +444,7 @@ func TestCLIAddAndRemoveLocalSkill(t *testing.T) {
 	output.Reset()
 	errorOutput.Reset()
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "one"}, options), errorOutput.String())
-	assert.Contains(t, output.String(), "  ✓ one · removed")
+	assert.Contains(t, output.String(), "✓ one · removed")
 	manifest, err = LoadManifest(manifestPath)
 	require.NoError(t, err)
 	assert.Empty(t, manifest.Sources)
@@ -478,9 +485,10 @@ func TestCLIUsageErrorsAreConcise(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(errorOutput.String(), "Usage:"))
 	assert.NotContains(t, errorOutput.String(), "Commands:")
 
+	output.Reset()
 	errorOutput.Reset()
-	assert.Equal(t, 2, runCLIResolved(context.Background(), nil, options))
-	assert.Contains(t, errorOutput.String(), "Error: command required")
-	assert.Equal(t, 1, strings.Count(errorOutput.String(), "Usage:"))
-	assert.NotContains(t, errorOutput.String(), "Commands:")
+	assert.Equal(t, 0, runCLIResolved(context.Background(), nil, options))
+	assert.Contains(t, output.String(), "Usage: skillsrc [OPTIONS] <COMMAND>")
+	assert.Contains(t, output.String(), "Commands:")
+	assert.Empty(t, errorOutput.String())
 }

@@ -93,17 +93,17 @@ func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
 	options.Out, options.Err = &output, &errorOutput
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options), errorOutput.String())
 	displayedSource := displaySource(remote, filepath.Dir(root))
-	assert.Contains(t, output.String(), "  ✓ "+displayedSource+" · up to date")
+	assert.Contains(t, output.String(), "✓ "+displayedSource+" · up to date")
 	assert.NotContains(t, output.String(), " · fetched")
 
 	output.Reset()
 	errorOutput.Reset()
 	secondCommit := pushGitChange(t, remote, "one/SKILL.md", "---\nname: one\n---\nsecond\n")
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options), errorOutput.String())
-	pattern := `  ↑ ` + regexp.QuoteMeta(displayedSource) + ` · one, two · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
+	pattern := `↑ ` + regexp.QuoteMeta(displayedSource) + ` · one, two · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
 	assert.Regexp(t, pattern, output.String())
 	assert.NotContains(t, output.String(), " · fetched")
-	assert.Contains(t, output.String(), "  └─ Summary · 1 update available")
+	assert.Contains(t, output.String(), "└─ Summary · 1 update available")
 }
 
 func TestDisplayRevisionMetadataPrefersExactTag(t *testing.T) {

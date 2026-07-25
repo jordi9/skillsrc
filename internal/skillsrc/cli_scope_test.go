@@ -22,7 +22,7 @@ func TestCLIInitCreatesProjectFilesWithoutLock(t *testing.T) {
 	runtime.Out, runtime.Err = &out, &stderr
 
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"init"}, runtime), stderr.String())
-	assert.Equal(t, "  ✓ "+filepath.Join("~", "project", "skills.toml")+" · initialized\n", out.String())
+	assert.Equal(t, "✓ "+filepath.Join("~", "project", "skills.toml")+" · initialized\n", out.String())
 	manifest, err := os.ReadFile(filepath.Join(root, "skills.toml"))
 	require.NoError(t, err)
 	assert.Equal(t, "version = 1\n", string(manifest))
@@ -83,8 +83,14 @@ func TestCLIDefaultsToUserScopeFromAgentsDirectory(t *testing.T) {
 	runtime.Out, runtime.Err = &out, &stderr
 
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"list"}, runtime), stderr.String())
-	assert.Contains(t, out.String(), "  • ~/.agents · using user scope\n")
+	assert.Contains(t, out.String(), "• ~/.agents · using user scope\n")
 	assert.Contains(t, out.String(), "0 skills")
+}
+
+func TestStyleUserScopeColorsTheWholeLineBlue(t *testing.T) {
+	line := "• ~/.agents · using user scope"
+	assert.Equal(t, line, styleUserScope(line, false))
+	assert.Equal(t, "\x1b[34m"+line+"\x1b[0m", styleUserScope(line, true))
 }
 
 func TestCLIInitDefaultsToUserScopeFromAgentsDirectory(t *testing.T) {
@@ -96,7 +102,7 @@ func TestCLIInitDefaultsToUserScopeFromAgentsDirectory(t *testing.T) {
 	runtime.Out, runtime.Err = &out, &stderr
 
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"init"}, runtime), stderr.String())
-	assert.Equal(t, "  • ~/.agents · using user scope\n  ✓ ~/.agents/skills.toml · initialized\n", out.String())
+	assert.Equal(t, "• ~/.agents · using user scope\n✓ ~/.agents/skills.toml · initialized\n", out.String())
 	assert.FileExists(t, filepath.Join(cwd, "skills.toml"))
 	assert.NoFileExists(t, filepath.Join(cwd, ".gitignore"))
 }
@@ -161,9 +167,12 @@ func TestCLIClassifiesCommandsBeforeDiscovery(t *testing.T) {
 	stderr.Reset()
 	assert.Equal(t, 2, RunCLI(context.Background(), []string{"unknown"}, runtime))
 	assert.NotContains(t, stderr.String(), "no project skills.toml")
+	out.Reset()
 	stderr.Reset()
-	assert.Equal(t, 2, RunCLI(context.Background(), nil, runtime))
-	assert.NotContains(t, stderr.String(), "no project skills.toml")
+	assert.Equal(t, 0, RunCLI(context.Background(), nil, runtime))
+	assert.Contains(t, out.String(), "Commands:")
+	assert.NotContains(t, out.String(), "no project skills.toml")
+	assert.Empty(t, stderr.String())
 }
 
 func TestCLIProjectDiscoveryDoesNotTreatUserManifestAsProject(t *testing.T) {
