@@ -35,6 +35,14 @@ type DoctorIssue struct {
 }
 
 func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
+	return engine.list(ctx, false)
+}
+
+func (engine *Engine) ListAll(ctx context.Context) ([]SkillStatus, error) {
+	return engine.list(ctx, true)
+}
+
+func (engine *Engine) list(ctx context.Context, includeUnmanaged bool) ([]SkillStatus, error) {
 	manifest, lock, err := engine.load()
 	if err != nil {
 		return nil, err
@@ -82,7 +90,72 @@ func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
 			statuses = append(statuses, status)
 		}
 	}
+	if includeUnmanaged {
+		statuses, err = engine.appendUnmanagedStatuses(ctx, installer, statuses)
+		if err != nil {
+			return nil, err
+		}
+	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+	return statuses, nil
+}
+
+func (engine *Engine) appendUnmanagedStatuses(ctx context.Context, installer *installer, statuses []SkillStatus) ([]SkillStatus, error) {
+	entries, err := os.ReadDir(engine.options.TargetDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return statuses, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan install target %q: %w", engine.options.TargetDir, err)
+	}
+	represented := make(map[string]struct{}, len(statuses))
+	for _, status := range statuses {
+		represented[status.Name] = struct{}{}
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(engine.options.TargetDir, entry.Name())
+		if _, exists := represented[entry.Name()]; exists {
+			continue
+		}
+		managed, _ := installer.managed(dir, entry.Name())
+		if managed {
+			continue
+		}
+		if !isRegularFile(filepath.Join(dir, "SKILL.md")) {
+			continue
+		}
+		if _, err := HashSkill(dir); err != nil {
+			return nil, fmt.Errorf("validate unmanaged skill %q: %w", dir, err)
+		}
+		name, err := skillName(dir)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := represented[name]; exists {
+			continue
+		}
+		disabled, err := sourceDisablesModelInvocation(dir)
+		if err != nil {
+			return nil, err
+		}
+		invocation := "enabled"
+		if disabled {
+			invocation = "disabled by source"
+		}
+		statuses = append(statuses, SkillStatus{
+			Name:            name,
+			Source:          "unmanaged",
+			ModelInvocation: invocation,
+			Status:          "unmanaged",
+		})
+		represented[name] = struct{}{}
+	}
 	return statuses, nil
 }
 

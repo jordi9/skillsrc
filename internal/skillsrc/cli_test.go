@@ -98,6 +98,49 @@ func TestStyleSummaryColorsTheWholeLinePink(t *testing.T) {
 	assert.Equal(t, "\x1b[35m"+line+"\x1b[0m", styleSummary(line, true))
 }
 
+func TestListAllIncludesStandaloneUnmanagedSkillsWithoutChangingDefaultList(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "managed"), "managed", "body")
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"managed\"]\n")
+	options := testOptions(root, manifest)
+	var output, errorOutput bytes.Buffer
+	options.Out, options.Err = &output, &errorOutput
+
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options), errorOutput.String())
+	writeTestFile(t, filepath.Join(options.TargetDir, "manual", "SKILL.md"), "---\nname: manual\ndisable-model-invocation: true\n---\nbody\n")
+	writeTestFile(t, filepath.Join(options.TargetDir, "notes.txt"), "not a skill")
+	require.NoError(t, os.Symlink(filepath.Join(options.TargetDir, "manual"), filepath.Join(options.TargetDir, "linked")))
+
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list"}, options), errorOutput.String())
+	assert.NotContains(t, output.String(), "manual")
+	assert.Contains(t, output.String(), "└─ 1 skill · 1 synced")
+
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all"}, options), errorOutput.String())
+	assert.Contains(t, output.String(), "• manual")
+	assert.Contains(t, output.String(), "unmanaged  disabled")
+	assert.NotContains(t, output.String(), "linked")
+	assert.NotContains(t, output.String(), "notes.txt")
+	assert.Contains(t, output.String(), "└─ 2 skills · 1 synced · 1 unmanaged")
+
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"list", "--all", "--json"}, options), errorOutput.String())
+	var statuses []SkillStatus
+	require.NoError(t, json.Unmarshal(output.Bytes(), &statuses))
+	require.Len(t, statuses, 2)
+	assert.Equal(t, "manual", statuses[1].Name)
+	assert.Equal(t, "unmanaged", statuses[1].Source)
+	assert.Equal(t, "disabled by source", statuses[1].ModelInvocation)
+	assert.Equal(t, "unmanaged", statuses[1].Status)
+}
+
 func TestListDisplayShowsModelInvocationProvenance(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -152,6 +195,7 @@ func TestStatusDetailExplainsEveryNonSyncedState(t *testing.T) {
 	assert.Equal(t, "blocked — target path conflicts with an unmanaged installation", statusDetail("collision"))
 	assert.Equal(t, "missing — locked skill is not installed", statusDetail("missing"))
 	assert.Equal(t, "unlocked — declared skill has no consistent lock entry", statusDetail("unlocked"))
+	assert.Equal(t, "", statusDetail("unmanaged"))
 }
 
 func TestStyleCommandSuggestions(t *testing.T) {
@@ -517,7 +561,7 @@ func TestCLIHelpInventoriesEveryCommandFlag(t *testing.T) {
 		"remove":   nil,
 		"outdated": nil,
 		"update":   nil,
-		"list":     {"--json"},
+		"list":     {"--all", "--json"},
 		"doctor":   {"--repair", "--json"},
 	}
 	for command, expected := range flags {
@@ -529,6 +573,17 @@ func TestCLIHelpInventoriesEveryCommandFlag(t *testing.T) {
 		}
 		assert.Empty(t, errorOutput.String())
 	}
+}
+
+func TestCLIHelpDocumentsListAll(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir()}
+	var output, errorOutput bytes.Buffer
+	runtime.Out, runtime.Err = &output, &errorOutput
+
+	require.Equal(t, 0, RunCLI(context.Background(), []string{"help", "list"}, runtime))
+	assert.Contains(t, output.String(), "--all   Include standalone unmanaged skills.")
+	assert.Empty(t, errorOutput.String())
 }
 
 func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) {

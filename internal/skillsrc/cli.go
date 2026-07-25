@@ -549,6 +549,7 @@ func addSource(manifestPath, input, ref string) (ManifestSource, error) {
 func runListCLI(ctx context.Context, engine *Engine, args []string, output, errorOutput io.Writer, home string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	includeAll := flags.Bool("all", false, "include standalone unmanaged skills")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -556,7 +557,13 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	if flags.NArg() != 0 {
 		return errors.New("list accepts no arguments")
 	}
-	statuses, err := engine.List(ctx)
+	var statuses []SkillStatus
+	var err error
+	if *includeAll {
+		statuses, err = engine.ListAll(ctx)
+	} else {
+		statuses, err = engine.List(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -599,7 +606,7 @@ func runListCLI(ctx context.Context, engine *Engine, args []string, output, erro
 	}
 	var summary strings.Builder
 	fmt.Fprintf(&summary, "%d %s", len(statuses), skillNoun)
-	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked"} {
+	for _, state := range []string{"current", "missing", "drifted", "collision", "unlocked", "unmanaged"} {
 		if counts[state] == 0 {
 			continue
 		}
@@ -695,6 +702,8 @@ func statusDetail(state string) string {
 		return "missing — locked skill is not installed"
 	case "unlocked":
 		return "unlocked — declared skill has no consistent lock entry"
+	case "unmanaged":
+		return ""
 	default:
 		return state
 	}
@@ -739,6 +748,8 @@ func stateDisplay(state string) (marker, label, colorCode string) {
 		return "!", "blocked", "\x1b[33m"
 	case "missing":
 		return "✗", "missing", "\x1b[31m"
+	case "unmanaged":
+		return "•", "unmanaged", "\x1b[36m"
 	default:
 		return "?", state, "\x1b[33m"
 	}
@@ -808,7 +819,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
 	{"outdated", "Show Git updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
-	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--json  Print JSON.", []string{"ls"}},
+	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--all   Include standalone unmanaged skills.\n--json  Print JSON.", []string{"ls"}},
 	{"doctor", "Diagnose or repair lock, install, cache, and project metadata", "skillsrc [OPTIONS] doctor [OPTIONS]", "None.", "--repair  Repair issues by running sync.\n--json    Print JSON.", nil},
 }
 

@@ -101,7 +101,7 @@ skillsrc remove SKILL...                    # remove declarations and sync
 skillsrc sync
 skillsrc outdated [source-or-skill ...]
 skillsrc update [source-or-skill ...]
-skillsrc list [--json]
+skillsrc list [--all] [--json]
 skillsrc doctor [--repair] [--json]
 ```
 
@@ -116,6 +116,8 @@ Project `init` uses the current directory (not a Git root), refuses nested confi
 `outdated` fetches configured Git refs and reports each Git source as up to date or update available without changing the manifest, lockfile, project metadata, or installed skills. Available Git updates show exact tags when present, otherwise commit dates, alongside short commit hashes. Selected local sources are resolved read-only and reported as matching the lock or having unsynced content changes. It accepts the same optional repository/path or skill selectors as `update`.
 
 `update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, then performs a sync. Local sources have no remote version; full commit refs remain exact.
+
+`list` reports configured skills and their installation state. Pass `--all` to also include valid standalone skills installed directly under the selected target directory; these are clearly marked `unmanaged` and remain outside skillsrc ownership. Declared-name collisions continue to appear as the configured skill's `collision` state rather than as a second unmanaged row.
 
 See [docs/lockfile.md](docs/lockfile.md) for the generated lock format.
 

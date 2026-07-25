@@ -40,6 +40,31 @@ func TestListReportsCurrentMissingDriftedAndCollision(t *testing.T) {
 	assert.Equal(t, "collision", got["collision"])
 }
 
+func TestListAllKeepsDeclaredCollisionAuthoritative(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "collision"), "collision", "canonical")
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"collision\"]\n")
+	options := testOptions(root, manifest)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(filepath.Join(options.TargetDir, "collision")))
+	makeSkill(t, filepath.Join(options.TargetDir, "collision"), "collision", "unmanaged")
+	writeTestFile(t, filepath.Join(root, "outside"), "outside")
+	require.NoError(t, os.Symlink(filepath.Join(root, "outside"), filepath.Join(options.TargetDir, "collision", "unsafe-link")))
+	makeSkill(t, filepath.Join(options.TargetDir, "standalone"), "standalone", "unmanaged")
+
+	statuses, err := NewEngine(options).ListAll(context.Background())
+	require.NoError(t, err)
+	require.Len(t, statuses, 2)
+	assert.Equal(t, "collision", statuses[0].Name)
+	assert.Equal(t, "collision", statuses[0].Status)
+	assert.Equal(t, "standalone", statuses[1].Name)
+	assert.Equal(t, "unmanaged", statuses[1].Status)
+}
+
 func TestListIgnoresLegacyProvenanceInOwnershipMarker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
