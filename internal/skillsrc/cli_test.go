@@ -468,6 +468,88 @@ func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {
 	assert.FileExists(t, filepath.Join(filepath.Dir(manifest), "skills.lock"))
 }
 
+func TestCLIHelpIsAvailableBeforeManifestDiscovery(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+
+	for _, args := range [][]string{nil, {"help"}, {"--help"}, {"-h"}} {
+		var output, errorOutput bytes.Buffer
+		runtime.Out, runtime.Err = &output, &errorOutput
+		assert.Equal(t, 0, RunCLI(context.Background(), args, runtime), args)
+		assert.Contains(t, output.String(), "Usage: skillsrc [OPTIONS] <COMMAND>")
+		assert.Contains(t, output.String(), "skillsrc help <COMMAND>")
+		assert.Empty(t, errorOutput.String())
+	}
+}
+
+func TestCLICommandHelpSupportsSyntaxesAndAliases(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir()}
+
+	var doctorHelp string
+	for _, args := range [][]string{{"help", "doctor"}, {"doctor", "--help"}, {"doctor", "-h"}} {
+		var output, errorOutput bytes.Buffer
+		runtime.Out, runtime.Err = &output, &errorOutput
+		assert.Equal(t, 0, RunCLI(context.Background(), args, runtime), args)
+		if doctorHelp == "" {
+			doctorHelp = output.String()
+		}
+		assert.Equal(t, doctorHelp, output.String())
+		assert.Contains(t, output.String(), "Options:\n  --repair  Repair issues by running sync.\n  --json    Print JSON.\n")
+		assert.Empty(t, errorOutput.String())
+	}
+
+	var removeHelp, aliasHelp bytes.Buffer
+	runtime.Out, runtime.Err = &removeHelp, &bytes.Buffer{}
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"help", "remove"}, runtime))
+	runtime.Out, runtime.Err = &aliasHelp, &bytes.Buffer{}
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"rm", "--help"}, runtime))
+	assert.Equal(t, removeHelp.String(), aliasHelp.String())
+}
+
+func TestCLIHelpInventoriesEveryCommandFlag(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir()}
+	flags := map[string][]string{
+		"init":     nil,
+		"sync":     nil,
+		"add":      {"--all", "--list", "--ref", "--invoke-user-only"},
+		"remove":   nil,
+		"outdated": nil,
+		"update":   nil,
+		"list":     {"--json"},
+		"doctor":   {"--repair", "--json"},
+	}
+	for command, expected := range flags {
+		var output, errorOutput bytes.Buffer
+		runtime.Out, runtime.Err = &output, &errorOutput
+		require.Equal(t, 0, RunCLI(context.Background(), []string{"help", command}, runtime))
+		for _, option := range expected {
+			assert.Contains(t, output.String(), "  "+option, command)
+		}
+		assert.Empty(t, errorOutput.String())
+	}
+}
+
+func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) {
+	t.Parallel()
+	runtime := CLIOptions{WorkingDir: t.TempDir(), HomeDir: t.TempDir()}
+	var output, errorOutput bytes.Buffer
+	runtime.Out, runtime.Err = &output, &errorOutput
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"help", "add"}, runtime))
+	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add.\n")
+	for _, option := range []string{"--all", "--list", "--ref", "--invoke-user-only"} {
+		assert.Contains(t, output.String(), "  "+option)
+	}
+	assert.Empty(t, errorOutput.String())
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 2, RunCLI(context.Background(), []string{"help", "unknown"}, runtime))
+	assert.Empty(t, output.String())
+	assert.Contains(t, errorOutput.String(), `unknown command "unknown"`)
+}
+
 func TestCLIUsageErrorsAreConcise(t *testing.T) {
 	t.Parallel()
 	options := testOptions(t.TempDir(), "/unused")

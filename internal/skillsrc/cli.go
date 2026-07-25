@@ -50,13 +50,28 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	}
 	command := remaining[0]
 	if command == "help" {
-		printUsage(runtime.Out)
-		return 0
+		if len(remaining) == 1 {
+			printUsage(runtime.Out)
+			return 0
+		}
+		if len(remaining) == 2 {
+			if spec, ok := commandSpecFor(remaining[1]); ok {
+				printCommandUsage(runtime.Out, spec)
+				return 0
+			}
+			return cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", remaining[1]))
+		}
+		return cliUsageError(runtime.Err, "help accepts at most one command")
 	}
-	known := map[string]bool{"init": true, "sync": true, "outdated": true, "update": true, "add": true, "remove": true, "rm": true, "list": true, "ls": true, "doctor": true}
-	if !known[command] {
+	spec, known := commandSpecFor(command)
+	if !known {
 		return cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", command))
 	}
+	if len(remaining) == 2 && (remaining[1] == "--help" || remaining[1] == "-h") {
+		printCommandUsage(runtime.Out, spec)
+		return 0
+	}
+	command = spec.name
 	explicit := make(map[string]bool)
 	global.Visit(func(found *flag.Flag) { explicit[found.Name] = true })
 	manifestExplicit := explicit["manifest"]
@@ -155,9 +170,9 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		}
 	case "add":
 		err = runAddCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
-	case "remove", "rm":
+	case "remove":
 		err = runRemoveCLI(ctx, engine, remaining[1:], options.Out, runtime.HomeDir)
-	case "list", "ls":
+	case "list":
 		err = runListCLI(ctx, engine, remaining[1:], options.Out, options.Err, runtime.HomeDir)
 	case "doctor":
 		var issues bool
@@ -753,21 +768,60 @@ func cliUsageError(output io.Writer, message string) int {
 	return 2
 }
 
+type cliCommandSpec struct {
+	name, description, usage, arguments, options string
+	aliases                                      []string
+}
+
+const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
+      --user          Alias for --global
+      --manifest PATH Use the skills.toml at PATH instead of searching parent directories
+      --lock PATH     Override the lockfile path
+      --target PATH   Override the installation directory
+      --cache PATH    Override the Git repository cache
+      --git PATH      Override the Git executable
+  -h, --help          Print help`
+
+var cliCommandSpecs = []cliCommandSpec{
+	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
+	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
+	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add.", "--all                 Add every discovered skill.\n--list                List available skills without changing the manifest.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
+	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
+	{"outdated", "Show available Git updates without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
+	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
+	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--json  Print JSON.", []string{"ls"}},
+	{"doctor", "Diagnose or repair lock, install, cache, and project metadata", "skillsrc [OPTIONS] doctor [OPTIONS]", "None.", "--repair  Repair issues by running sync.\n--json    Print JSON.", nil},
+}
+
+func commandSpecFor(name string) (cliCommandSpec, bool) {
+	for _, spec := range cliCommandSpecs {
+		if name == spec.name {
+			return spec, true
+		}
+		for _, alias := range spec.aliases {
+			if name == alias {
+				return spec, true
+			}
+		}
+	}
+	return cliCommandSpec{}, false
+}
+
 func printUsage(output io.Writer) {
-	fmt.Fprintln(output, strings.TrimSpace(`skillsrc — Declarative skill dependencies for .agents/skills
+	var commands strings.Builder
+	for _, spec := range cliCommandSpecs {
+		fmt.Fprintf(&commands, "  %-9s %s", spec.name, spec.description)
+		if len(spec.aliases) > 0 {
+			fmt.Fprintf(&commands, " [alias: %s]", strings.Join(spec.aliases, ", "))
+		}
+		commands.WriteByte('\n')
+	}
+	fmt.Fprintf(output, strings.TrimSpace(`skillsrc — Declarative skill dependencies for .agents/skills
 
 Usage: skillsrc [OPTIONS] <COMMAND>
 
 Commands:
-  init      Initialize a manifest
-  sync      Install the exact declared and locked skill set
-  add       Add skills from a Git repository or local directory
-  remove    Remove skills and their managed installations [alias: rm]
-  outdated  Show available Git updates without changing project files
-  update    Update Git revisions, then sync
-  list      Show configured skills and installation state [alias: ls]
-  doctor    Diagnose or repair lock, install, cache, and project metadata
-  help      Print this message
+%s  help      Print general or command help
 
 Scope selection:
   By default, skillsrc uses the nearest project skills.toml.
@@ -783,5 +837,20 @@ Options:
       --target PATH  Override the installation directory
       --cache PATH   Override the Git repository cache
       --git PATH     Override the Git executable
-  -h, --help         Print help`))
+  -h, --help         Print help
+
+Run 'skillsrc help <COMMAND>' for command details.`), commands.String())
+	fmt.Fprintln(output)
+}
+
+func printCommandUsage(output io.Writer, spec cliCommandSpec) {
+	fmt.Fprintf(output, "%s — %s\n\nUsage: %s\n", spec.name, spec.description, spec.usage)
+	if len(spec.aliases) > 0 {
+		fmt.Fprintf(output, "\nAliases: %s\n", strings.Join(spec.aliases, ", "))
+	}
+	fmt.Fprintf(output, "\nArguments:\n%s\n\nOptions:\n%s\n\nGlobal options:\n%s\n", indentHelpLines(spec.arguments), indentHelpLines(spec.options), globalOptionsHelp)
+}
+
+func indentHelpLines(text string) string {
+	return "  " + strings.ReplaceAll(text, "\n", "\n  ")
 }

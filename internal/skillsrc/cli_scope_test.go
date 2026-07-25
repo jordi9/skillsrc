@@ -139,8 +139,9 @@ func TestHelpUsesCommandOrientedLayout(t *testing.T) {
 	help := output.String()
 	assert.Contains(t, help, "Usage: skillsrc [OPTIONS] <COMMAND>\n")
 	assert.Contains(t, help, "Commands:\n  init      Initialize a manifest")
-	assert.Contains(t, help, "Scope selection:\n")
-	assert.Contains(t, help, "Options:\n")
+	assert.Contains(t, help, "Scope selection:\n  By default, skillsrc uses the nearest project skills.toml.\n  When run directly from ~/.agents, skillsrc uses the user scope.\n\n  -g, --global")
+	assert.Contains(t, help, "      --manifest PATH\n                     Use the skills.toml at PATH")
+	assert.Contains(t, help, "Options:\n      --lock PATH")
 	assert.NotContains(t, help, "[global flags]")
 	assert.Equal(t, 1, strings.Count(help, "Usage:"))
 
