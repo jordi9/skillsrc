@@ -58,6 +58,55 @@ skills=["../one"]
 	}
 }
 
+func TestLoadManifestAcceptsDisableModelInvocationForms(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "skills.toml")
+	writeTestFile(t, path, `version = 1
+[[sources]]
+path = "./local"
+skills = ["plain", "!shortcut", { name = "object", disable-model-invocation = true }, { name = "false", disable-model-invocation = false }]
+`)
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := manifest.Sources[0]
+	if got, want := source.Skills, []string{"plain", "shortcut", "object", "false"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Skills = %v, want %v", got, want)
+	}
+	if !source.DisableModelInvocation["shortcut"] || !source.DisableModelInvocation["object"] || source.DisableModelInvocation["plain"] || source.DisableModelInvocation["false"] {
+		t.Fatalf("DisableModelInvocation = %#v", source.DisableModelInvocation)
+	}
+	encoded, err := EncodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"!shortcut"`) || !strings.Contains(string(encoded), `"!object"`) {
+		t.Fatalf("encoded manifest does not preserve overrides:\n%s", encoded)
+	}
+}
+
+func TestLoadManifestRejectsMalformedDisableModelInvocationEntries(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, entry, want string }{
+		{"empty shortcut", `"!"`, "invalid skill name"},
+		{"duplicate logical name", `"one", "!one"`, `duplicate skill "one"`},
+		{"unknown object key", `{ name = "one", other = true }`, "unknown skill key"},
+		{"missing object name", `{ disable-model-invocation = true }`, "string name"},
+		{"invalid option type", `{ name = "one", disable-model-invocation = "yes" }`, "must be a boolean"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "skills.toml")
+			writeTestFile(t, path, "version=1\n[[sources]]\npath=\"./local\"\nskills=["+tt.entry+"]\n")
+			_, err := LoadManifest(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadManifest() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadManifestResolvesLocalPathsFromManifestDirectory(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

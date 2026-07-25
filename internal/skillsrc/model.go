@@ -29,11 +29,12 @@ type Manifest struct {
 }
 
 type ManifestSource struct {
-	Repo         string   `toml:"repo,omitempty"`
-	Path         string   `toml:"path,omitempty"`
-	Ref          string   `toml:"ref,omitempty"`
-	Skills       []string `toml:"skills"`
-	ResolvedPath string   `toml:"-"`
+	Repo                   string          `toml:"repo,omitempty"`
+	Path                   string          `toml:"path,omitempty"`
+	Ref                    string          `toml:"ref,omitempty"`
+	Skills                 []string        `toml:"skills"`
+	DisableModelInvocation map[string]bool `toml:"-"`
+	ResolvedPath           string          `toml:"-"`
 }
 
 type Lock struct {
@@ -61,16 +62,73 @@ type ValidationError struct{ Problem string }
 
 func (e *ValidationError) Error() string { return "validation: " + e.Problem }
 
+type mapOrStringSkill struct {
+	Name                   string
+	DisableModelInvocation bool
+}
+
+func (skill *mapOrStringSkill) UnmarshalTOML(value any) error {
+	switch value := value.(type) {
+	case string:
+		skill.Name = value
+		if strings.HasPrefix(value, "!") {
+			skill.Name = strings.TrimPrefix(value, "!")
+			skill.DisableModelInvocation = true
+		}
+		return nil
+	case map[string]any:
+		for key := range value {
+			if key != "name" && key != "disable-model-invocation" {
+				return &ValidationError{Problem: fmt.Sprintf("unknown skill key %q", key)}
+			}
+		}
+		name, ok := value["name"].(string)
+		if !ok {
+			return &ValidationError{Problem: "inline skill must have a string name"}
+		}
+		disabled := false
+		if raw, exists := value["disable-model-invocation"]; exists {
+			var valid bool
+			disabled, valid = raw.(bool)
+			if !valid {
+				return &ValidationError{Problem: fmt.Sprintf("skill %q disable-model-invocation must be a boolean", name)}
+			}
+		}
+		skill.Name, skill.DisableModelInvocation = name, disabled
+		return nil
+	default:
+		return &ValidationError{Problem: "skill entry must be a string or inline object"}
+	}
+}
+
 var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func LoadManifest(path string) (Manifest, error) {
-	var manifest Manifest
-	metadata, err := toml.DecodeFile(path, &manifest)
+	var raw struct {
+		Version int `toml:"version"`
+		Sources []struct {
+			Repo   string             `toml:"repo,omitempty"`
+			Path   string             `toml:"path,omitempty"`
+			Ref    string             `toml:"ref,omitempty"`
+			Skills []mapOrStringSkill `toml:"skills"`
+		} `toml:"sources"`
+	}
+	metadata, err := toml.DecodeFile(path, &raw)
 	if err != nil {
-		return manifest, fmt.Errorf("read manifest %q: %w", path, err)
+		return Manifest{}, fmt.Errorf("read manifest %q: %w", path, err)
 	}
 	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
-		return manifest, &ValidationError{Problem: fmt.Sprintf("unknown manifest key %q", undecoded[0])}
+		return Manifest{}, &ValidationError{Problem: fmt.Sprintf("unknown manifest key %q", undecoded[0])}
+	}
+	manifest := Manifest{Version: raw.Version, Sources: make([]ManifestSource, len(raw.Sources))}
+	for i, source := range raw.Sources {
+		manifest.Sources[i] = ManifestSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref, DisableModelInvocation: make(map[string]bool)}
+		for _, skill := range source.Skills {
+			manifest.Sources[i].Skills = append(manifest.Sources[i].Skills, skill.Name)
+			if skill.DisableModelInvocation {
+				manifest.Sources[i].DisableModelInvocation[skill.Name] = true
+			}
+		}
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -189,11 +247,27 @@ func ValidateLock(lock Lock) error {
 }
 
 func EncodeManifest(manifest Manifest) ([]byte, error) {
-	stable := manifest
-	stable.Sources = append([]ManifestSource(nil), manifest.Sources...)
-	for i := range stable.Sources {
-		stable.Sources[i].Skills = append([]string(nil), stable.Sources[i].Skills...)
-		sort.Strings(stable.Sources[i].Skills)
+	type encodedSource struct {
+		Repo   string   `toml:"repo,omitempty"`
+		Path   string   `toml:"path,omitempty"`
+		Ref    string   `toml:"ref,omitempty"`
+		Skills []string `toml:"skills"`
+	}
+	stable := struct {
+		Version int             `toml:"version"`
+		Sources []encodedSource `toml:"sources,omitempty"`
+	}{Version: manifest.Version, Sources: make([]encodedSource, len(manifest.Sources))}
+	for i, source := range manifest.Sources {
+		stable.Sources[i] = encodedSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref}
+		for _, name := range source.Skills {
+			if source.DisableModelInvocation[name] {
+				name = "!" + name
+			}
+			stable.Sources[i].Skills = append(stable.Sources[i].Skills, name)
+		}
+		sort.Slice(stable.Sources[i].Skills, func(a, b int) bool {
+			return strings.TrimPrefix(stable.Sources[i].Skills[a], "!") < strings.TrimPrefix(stable.Sources[i].Skills[b], "!")
+		})
 	}
 	var buffer bytes.Buffer
 	if err := toml.NewEncoder(&buffer).Encode(stable); err != nil {

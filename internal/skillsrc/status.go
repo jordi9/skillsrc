@@ -63,7 +63,7 @@ func (engine *Engine) List(ctx context.Context) ([]SkillStatus, error) {
 				status.LockedCommit = locked.source.Commit
 				status.LockedHash = locked.skill.Hash
 				status.ResolvedPath = locked.skill.Path
-				status.Status = installedStatus(installer, engine.options.TargetDir, *locked.skill)
+				status.Status = installedStatus(installer, engine.options.TargetDir, *locked.skill, source.DisableModelInvocation[name])
 			}
 			statuses = append(statuses, status)
 		}
@@ -98,7 +98,7 @@ func findLockedSkill(lock Lock, kind SourceKind, identity string, manifestSource
 	return nil
 }
 
-func installedStatus(installer *installer, target string, skill LockedSkill) string {
+func installedStatus(installer *installer, target string, skill LockedSkill, disableModelInvocation bool) string {
 	dir := filepath.Join(target, skill.Name)
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -115,8 +115,18 @@ func installedStatus(installer *installer, target string, skill LockedSkill) str
 	if json.Unmarshal(data, &marker) != nil || marker.Version != SchemaVersion || marker.Owner != installer.owner || marker.Skill != skill.Name {
 		return "collision"
 	}
+	if marker.DisableModelInvocation != disableModelInvocation {
+		return "drifted"
+	}
+	expectedHash := marker.InstalledHash
+	if marker.SourceHash == "" && marker.InstalledHash == "" && !disableModelInvocation {
+		// Markers created before derived installs were introduced remain valid.
+		expectedHash = skill.Hash
+	} else if marker.SourceHash != skill.Hash {
+		return "drifted"
+	}
 	hash, err := HashSkill(dir)
-	if err != nil || hash != skill.Hash {
+	if err != nil || expectedHash == "" || hash != expectedHash {
 		return "drifted"
 	}
 	return "current"

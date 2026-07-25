@@ -72,11 +72,15 @@ func FindProjectManifest(startDir, homeDir string) (string, error) {
 	}
 	home = filepath.Clean(home)
 	insideHome := start == home || isWithin(start, home)
+	userManifest := filepath.Join(home, ".agents", "skills.toml")
 	for directory := start; ; directory = filepath.Dir(directory) {
 		if insideHome && directory == home {
 			break
 		}
 		manifest := filepath.Join(directory, "skills.toml")
+		if manifest == userManifest {
+			continue
+		}
 		if info, statErr := os.Stat(manifest); statErr == nil {
 			if info.IsDir() {
 				return "", fmt.Errorf("project manifest %q is a directory", manifest)

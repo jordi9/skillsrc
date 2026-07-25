@@ -100,6 +100,61 @@ func TestListDisplayIsCompact(t *testing.T) {
 	assert.Equal(t, "! modified", displayState("drifted"))
 }
 
+func TestParseAddArgsAcceptsSkillsCLISpecifier(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := parseAddArgs([]string{"tldraw/tldraw@write-unit-tests", "--ref", "v1.0.0"})
+	require.NoError(t, err)
+	assert.Equal(t, "tldraw/tldraw", parsed.source)
+	assert.Equal(t, []string{"write-unit-tests"}, parsed.skills)
+	assert.Equal(t, "v1.0.0", parsed.ref)
+}
+
+func TestParseAddArgsRejectsSkillsCLISpecifierWithOtherSelection(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseAddArgs([]string{"tldraw/tldraw@write-unit-tests", "another-skill"})
+	assert.EqualError(t, err, "a source using @skill cannot be combined with positional skill names")
+}
+
+func TestParseAddArgsAcceptsInvokeUserOnlyForSelectedSkills(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := parseAddArgs([]string{"owner/repo@manual-skill", "--invoke-user-only"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"manual-skill"}, parsed.skills)
+	assert.True(t, parsed.userOnly)
+}
+
+func TestParseAddArgsRejectsInvokeUserOnlyWhenOnlyListing(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseAddArgs([]string{"owner/repo", "--invoke-user-only"})
+	assert.EqualError(t, err, "--invoke-user-only requires skill names or --all")
+	_, err = parseAddArgs([]string{"owner/repo", "--list", "--invoke-user-only"})
+	assert.EqualError(t, err, "--invoke-user-only cannot be combined with --list")
+}
+
+func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+	options.Out, options.Err = &output, &errorOutput
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one", "--invoke-user-only"}, options), errorOutput.String())
+	manifestBytes, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(manifestBytes), `skills = ["!one"]`)
+	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(installed), "disable-model-invocation: true")
+}
+
 func TestCLIAddSourceListsAvailableSkillsWithoutChangingManifest(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

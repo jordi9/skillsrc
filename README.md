@@ -9,7 +9,7 @@ Project-local configuration is the default:
 ```sh
 cd project
 skillsrc init
-skillsrc add owner/repository useful-skill
+skillsrc add owner/repository@useful-skill
 ```
 
 `init` creates this layout:
@@ -67,6 +67,18 @@ path = "../local-skills"  # resolved relative to this manifest; ~/... is support
 skills = ["private-skill"]
 ```
 
+By default, installed skills retain their upstream frontmatter. Prefix a skill with `!` to prevent model-initiated invocation, or use the equivalent explicit inline form:
+
+```toml
+skills = [
+  "ordinary-skill",
+  "!manual-only",
+  { name = "another-manual-skill", disable-model-invocation = true },
+]
+```
+
+For enabled entries, `skillsrc` sets the root `disable-model-invocation: true` key in the installed `SKILL.md`; the source and its lock hash remain unchanged. The shorthand is used when manifests are rewritten. Entries with `disable-model-invocation = false` are accepted and encoded as ordinary skill names. A logical skill name may appear only once, so `"one"` and `"!one"` are duplicates.
+
 A local source cannot set `ref`. Selected skills must be discoverable in the source and cannot be selected by more than one source.
 
 Discovery is bounded to a repository root containing `SKILL.md`, immediate child directories, `skills/*` (plus one category level used by grouped repositories), `.agents/skills/*`, and `.claude/skills/*`. Duplicate discovered names are rejected. Safe relative file symlinks that resolve inside a selected skill are copied as regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
@@ -77,7 +89,10 @@ Discovery is bounded to a repository root containing `SKILL.md`, immediate child
 skillsrc init
 skillsrc add SOURCE                         # list discovered skills
 skillsrc add SOURCE SKILL...                # add selected skills and sync
-skillsrc add SOURCE --all                   # add every discovered skill and sync
+skillsrc add OWNER/REPO@SKILL               # add one skill using skills CLI notation
+skillsrc add SOURCE SKILL... --invoke-user-only # add skills that only users can invoke
+skillsrc add SOURCE --all                      # add every discovered skill and sync
+skillsrc add SOURCE --all --invoke-user-only   # add every skill as user-only
 skillsrc add SOURCE SKILL... --ref REF      # branch, tag, or full commit hash
 skillsrc remove SKILL...                    # remove declarations and sync
 skillsrc sync
@@ -89,7 +104,7 @@ skillsrc doctor [--repair] [--json]
 
 Project `init` uses the current directory (not a Git root), refuses nested configuration and initialization directly in `$HOME`, and never overwrites a manifest. `skillsrc -g init` initializes `~/.agents`; `skillsrc --manifest PATH init` initializes exactly that file. Neither creates Git ignore metadata. `add` requires an existing selected manifest.
 
-`add` accepts GitHub shorthand, HTTPS or SSH Git URLs, and local paths beginning with `./`, `../`, `/`, or `~`. With no skill names, it only lists what the source contains. `--list` makes that intent explicit. Added skills are validated before the manifest changes; `--all` cannot be combined with names.
+`add` accepts GitHub shorthand, HTTPS or SSH Git URLs, and local paths beginning with `./`, `../`, `/`, or `~`. GitHub shorthand also accepts the skills CLI's `owner/repository@skill-name` notation to select one skill; use `--ref` separately to select a branch, tag, or commit. Pass `--invoke-user-only` with named skills or `--all` to write them with the `!` shorthand and install them with model invocation disabled. With no skill names, it only lists what the source contains. `--list` makes that intent explicit. Added skills are validated before the manifest changes; `--all` cannot be combined with names.
 
 `remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by this manifest. It does not update the remaining Git sources.
 
@@ -103,7 +118,7 @@ See [docs/lockfile.md](docs/lockfile.md) for the generated lock format.
 
 ## Safety and recovery
 
-Each installed skill contains `.skillsrc-managed.json`, tied to the manifest that owns it. The marker records only its schema version, manifest owner, and skill name; source provenance and content hashes remain authoritative in `skills.lock`. `skillsrc` replaces or removes only directories carrying a valid marker for that manifest. A file, symlink, unmarked directory, or directory owned by another manifest is an unmanaged collision: the operation stops without overwriting it.
+Each installed skill contains `.skillsrc-managed.json`, tied to the manifest that owns it. The marker records its schema version, manifest owner, skill name, derived installed hash, source hash, and any installation override. Source provenance and upstream content hashes remain authoritative in `skills.lock`. `skillsrc` replaces or removes only directories carrying a valid marker for that manifest. A file, symlink, unmarked directory, or directory owned by another manifest is an unmanaged collision: the operation stops without overwriting it.
 
 Installs use staging directories, backups, and transaction journals. The next mutating operation automatically recovers an interrupted replacement or prune. Use `skillsrc doctor` to report lock, install, cache, and project Git ignore problems; `skillsrc doctor --repair` restores repairable installation and project metadata. Unmanaged collisions must be resolved by the user.
 

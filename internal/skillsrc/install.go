@@ -1,6 +1,7 @@
 package skillsrc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,9 +18,12 @@ import (
 )
 
 type ownership struct {
-	Version int    `json:"version"`
-	Owner   string `json:"owner"`
-	Skill   string `json:"skill"`
+	Version                int    `json:"version"`
+	Owner                  string `json:"owner"`
+	Skill                  string `json:"skill"`
+	SourceHash             string `json:"source_hash,omitempty"`
+	InstalledHash          string `json:"installed_hash,omitempty"`
+	DisableModelInvocation bool   `json:"disable_model_invocation"`
 }
 
 type transaction struct {
@@ -95,7 +99,7 @@ func cacheLockPath(lockDir, resource string) string {
 	return filepath.Join(lockDir, hex.EncodeToString(digest[:])+".lock")
 }
 
-func (installer *installer) install(ctx context.Context, name, sourceDir, expectedHash string) error {
+func (installer *installer) install(ctx context.Context, name, sourceDir, expectedHash string, disableModelInvocation bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -108,7 +112,7 @@ func (installer *installer) install(ctx context.Context, name, sourceDir, expect
 		if markerErr != nil || !managed {
 			return fmt.Errorf("unmanaged collision at %q", destination)
 		}
-		if installedStatus(installer, installer.target, LockedSkill{Name: name, Hash: expectedHash}) == "current" {
+		if installedStatus(installer, installer.target, LockedSkill{Name: name, Hash: expectedHash}, disableModelInvocation) == "current" {
 			return nil
 		}
 	}
@@ -133,7 +137,16 @@ func (installer *installer) install(ctx context.Context, name, sourceDir, expect
 	if actualHash != expectedHash {
 		return fmt.Errorf("skill %q changed while being copied: got %s, expected %s", name, actualHash, expectedHash)
 	}
-	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: name}
+	if disableModelInvocation {
+		if err := setDisableModelInvocation(filepath.Join(staging, "SKILL.md")); err != nil {
+			return fmt.Errorf("skill %q: %w", name, err)
+		}
+	}
+	installedHash, err := HashSkill(staging)
+	if err != nil {
+		return err
+	}
+	marker := ownership{Version: SchemaVersion, Owner: installer.owner, Skill: name, SourceHash: expectedHash, InstalledHash: installedHash, DisableModelInvocation: disableModelInvocation}
 	markerBytes, _ := json.Marshal(marker)
 	markerBytes = append(markerBytes, '\n')
 	if err := writeFileSynced(filepath.Join(staging, ownershipFile), markerBytes, 0o644); err != nil {
@@ -384,6 +397,50 @@ func copySkill(ctx context.Context, source, destination string) error {
 		}
 		return closeInErr
 	})
+}
+
+func setDisableModelInvocation(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("read SKILL.md mode: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read SKILL.md frontmatter: %w", err)
+	}
+	separator := "\n"
+	if bytes.Contains(data, []byte("\r\n")) {
+		separator = "\r\n"
+	}
+	lines := strings.Split(string(data), separator)
+	if len(lines) < 2 || lines[0] != "---" {
+		return &ValidationError{Problem: "disable-model-invocation requires SKILL.md to start with YAML frontmatter"}
+	}
+	closing := -1
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			closing = i
+			break
+		}
+	}
+	if closing < 0 {
+		return &ValidationError{Problem: "disable-model-invocation requires a closing YAML frontmatter delimiter in SKILL.md"}
+	}
+	found := false
+	for i := 1; i < closing; i++ {
+		const key = "disable-model-invocation"
+		if strings.HasPrefix(lines[i], key) {
+			rest := strings.TrimSpace(strings.TrimPrefix(lines[i], key))
+			if strings.HasPrefix(rest, ":") {
+				lines[i] = key + ": true"
+				found = true
+			}
+		}
+	}
+	if !found {
+		lines = append(lines[:closing], append([]string{"disable-model-invocation: true"}, lines[closing:]...)...)
+	}
+	return writeAtomic(path, []byte(strings.Join(lines, separator)), info.Mode().Perm())
 }
 
 func lockFileContext(ctx context.Context, path string) (func(), error) {

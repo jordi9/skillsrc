@@ -85,6 +85,73 @@ func TestSyncRefusesUnmanagedCollision(t *testing.T) {
 	}
 }
 
+func TestSyncDerivesDisableModelInvocationInstallWithoutChangingSourceOrLockHash(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local", "one")
+	writeTestFile(t, filepath.Join(local, "SKILL.md"), "---\nname: one\ndisable-model-invocation: false\n---\nbody\n")
+	sourceBefore, err := os.ReadFile(filepath.Join(local, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamHash, err := HashSkill(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"!one\"]\n")
+	options := testOptions(root, manifestPath)
+	if _, err := NewEngine(options).Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installed), "disable-model-invocation: true") {
+		t.Fatalf("installed SKILL.md missing override:\n%s", installed)
+	}
+	sourceAfter, _ := os.ReadFile(filepath.Join(local, "SKILL.md"))
+	if string(sourceAfter) != string(sourceBefore) {
+		t.Fatal("source SKILL.md was mutated")
+	}
+	lock, err := LoadLock(options.LockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Sources[0].Skills[0].Hash; got != upstreamHash {
+		t.Fatalf("lock hash = %q, want upstream hash %q", got, upstreamHash)
+	}
+
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"one\"]\n")
+	statuses, err := NewEngine(options).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses[0].Status != "drifted" {
+		t.Fatalf("status after option change = %q, want drifted", statuses[0].Status)
+	}
+	if _, err := NewEngine(options).Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	installed, _ = os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
+	if string(installed) != string(sourceBefore) {
+		t.Fatalf("option change was not applied:\n%s", installed)
+	}
+}
+
+func TestSyncDisableModelInvocationRequiresClosingFrontmatter(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "local", "one", "SKILL.md"), "---\nname: one\n")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\npath=\"./local\"\nskills=[\"!one\"]\n")
+	_, err := NewEngine(testOptions(root, manifestPath)).Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "closing YAML frontmatter delimiter") {
+		t.Fatalf("Sync() error = %v", err)
+	}
+}
+
 func TestSyncRepairsManagedDriftAndPrunesOnlyManagedSkills(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

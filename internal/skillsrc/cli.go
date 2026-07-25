@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 )
@@ -372,7 +373,7 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 		}
 		return nil
 	}
-	_, result, err := engine.Add(ctx, source, parsed.skills, parsed.all)
+	_, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
 	if err != nil {
 		return err
 	}
@@ -381,12 +382,15 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 }
 
 type addArguments struct {
-	source string
-	skills []string
-	ref    string
-	all    bool
-	list   bool
+	source   string
+	skills   []string
+	ref      string
+	all      bool
+	list     bool
+	userOnly bool
 }
+
+var skillsCLISpecifierPattern = regexp.MustCompile(`^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9][A-Za-z0-9._-]*)$`)
 
 func parseAddArgs(args []string) (addArguments, error) {
 	var parsed addArguments
@@ -398,6 +402,8 @@ func parseAddArgs(args []string) (addArguments, error) {
 			parsed.all = true
 		case argument == "--list":
 			parsed.list = true
+		case argument == "--invoke-user-only":
+			parsed.userOnly = true
 		case argument == "--ref":
 			index++
 			if index >= len(args) {
@@ -416,11 +422,23 @@ func parseAddArgs(args []string) (addArguments, error) {
 		return parsed, errors.New("add requires a source; optionally followed by skill names")
 	}
 	parsed.source, parsed.skills = positional[0], positional[1:]
+	if matches := skillsCLISpecifierPattern.FindStringSubmatch(parsed.source); matches != nil {
+		if len(parsed.skills) > 0 {
+			return parsed, errors.New("a source using @skill cannot be combined with positional skill names")
+		}
+		parsed.source, parsed.skills = matches[1], []string{matches[2]}
+	}
 	if parsed.all && len(parsed.skills) > 0 {
 		return parsed, errors.New("--all cannot be combined with skill names")
 	}
 	if parsed.list && (parsed.all || len(parsed.skills) > 0) {
 		return parsed, errors.New("--list cannot be combined with --all or skill names")
+	}
+	if parsed.userOnly && parsed.list {
+		return parsed, errors.New("--invoke-user-only cannot be combined with --list")
+	}
+	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 {
+		return parsed, errors.New("--invoke-user-only requires skill names or --all")
 	}
 	return parsed, nil
 }

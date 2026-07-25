@@ -124,6 +124,28 @@ func TestCLIClassifiesCommandsBeforeDiscovery(t *testing.T) {
 	assert.NotContains(t, stderr.String(), "no project skills.toml")
 }
 
+func TestCLIProjectDiscoveryDoesNotTreatUserManifestAsProject(t *testing.T) {
+	home := t.TempDir()
+	userRoot := filepath.Join(home, ".agents")
+	cwd := filepath.Join(userRoot, "nested")
+	local := filepath.Join(home, "source")
+	require.NoError(t, os.MkdirAll(cwd, 0o755))
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	writeTestFile(t, filepath.Join(userRoot, "skills.toml"), "version = 1\n[[sources]]\npath = \"../source\"\nskills = [\"one\"]\n")
+	var stderr bytes.Buffer
+	runtime := scopeRuntime(cwd, home)
+	runtime.Err = &stderr
+
+	assert.Equal(t, 1, RunCLI(context.Background(), []string{"sync"}, runtime))
+	assert.Contains(t, stderr.String(), "no project skills.toml found")
+	assert.NoDirExists(t, filepath.Join(userRoot, ".agents"))
+
+	stderr.Reset()
+	assert.Equal(t, 0, RunCLI(context.Background(), []string{"-g", "sync"}, runtime), stderr.String())
+	assert.FileExists(t, filepath.Join(userRoot, "skills", "one", "SKILL.md"))
+	assert.NoDirExists(t, filepath.Join(userRoot, ".agents"))
+}
+
 func TestCLIProjectDiscoveryFromNestedDirectoryWritesManagedMetadata(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, "project")

@@ -64,7 +64,7 @@ func TestSyncRejectsSymlinkedLocalSourceRoot(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(options.TargetDir, "one"))
 }
 
-func TestSyncWritesOnlyOwnershipToManagedMarker(t *testing.T) {
+func TestSyncWritesOwnershipAndInstallHashesToManagedMarker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
@@ -79,11 +79,12 @@ func TestSyncWritesOnlyOwnershipToManagedMarker(t *testing.T) {
 	require.NoError(t, err)
 	var marker map[string]any
 	require.NoError(t, json.Unmarshal(data, &marker))
-	assert.Equal(t, map[string]any{
-		"version": float64(SchemaVersion),
-		"owner":   newInstaller(options.TargetDir, manifest, filepath.Join(root, "locks")).owner,
-		"skill":   "one",
-	}, marker)
+	assert.Equal(t, float64(SchemaVersion), marker["version"])
+	assert.Equal(t, newInstaller(options.TargetDir, manifest, filepath.Join(root, "locks")).owner, marker["owner"])
+	assert.Equal(t, "one", marker["skill"])
+	assert.NotEmpty(t, marker["source_hash"])
+	assert.NotEmpty(t, marker["installed_hash"])
+	assert.Equal(t, false, marker["disable_model_invocation"])
 }
 
 func TestSyncRefusesToPruneFormerlyManagedSkillWithoutOwnershipMarker(t *testing.T) {
