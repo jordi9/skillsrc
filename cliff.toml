@@ -8,11 +8,9 @@ Initial public release of `skillsrc`.
 - Reproduce exact `.agents/skills` installations across machines.
 - Detect drift and protect unmanaged skills with ownership-aware updates.
 {% endif %}
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | upper_first }}
-{% for commit in commits %}
+### Changes
+{% for commit in commits | sort(attribute="message") %}
 - {{ commit.message | split(pat="\n") | first | trim }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/jordi9/skillsrc/commit/{{ commit.id }}))\
-{% endfor %}
 {% endfor %}
 """
 trim = true
@@ -21,15 +19,3 @@ trim = true
 conventional_commits = false
 filter_unconventional = false
 tag_pattern = "^v[0-9].*"
-commit_parsers = [
-  { message = "^feat(\\(.+\\))?:", group = "🚀 Features" },
-  { message = "^fix(\\(.+\\))?:", group = "🐛 Bug Fixes" },
-  { message = "^perf(\\(.+\\))?:", group = "⚡ Performance" },
-  { message = "^refactor(\\(.+\\))?:", group = "🔧 Refactor" },
-  { message = "^docs(\\(.+\\))?:", group = "📚 Documentation" },
-  { message = "^test(\\(.+\\))?:", group = "🧪 Testing" },
-  { message = "^build(\\(.+\\))?:", group = "📦 Build" },
-  { message = "^ci(\\(.+\\))?:", group = "🔄 CI" },
-  { message = "^chore(\\(.+\\))?:", skip = true },
-  { message = ".*", group = "Changes" },
-]
