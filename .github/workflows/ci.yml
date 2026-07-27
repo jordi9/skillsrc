@@ -19,6 +19,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - if: matrix.os == 'ubuntu-latest'
+        run: make fmt-check
       - run: go test ./...
       - run: go vet ./...
       - run: go build -trimpath -ldflags "-X github.com/jordi9/skillsrc/internal/skillsrc.Version=ci" -o skillsrc ./cmd/skillsrc

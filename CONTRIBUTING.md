@@ -9,4 +9,4 @@ Before opening a pull request:
 3. Run `go test ./...` and `go vet ./...`.
 4. Explain the user-facing problem and any safety implications in the pull request.
 
-Support and review are provided on a best-effort basis. Multi-agent installation targets and compatibility layers are outside the project's scope.
+Multi-agent installation targets and compatibility layers are outside the project's scope. Just create your own tooling.
