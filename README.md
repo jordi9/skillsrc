@@ -159,9 +159,9 @@ Run `skillsrc <command> --help` for complete arguments and options.
 
 ### Initialize a manifest
 
-Project `init` creates `skills.toml` in the current directory, not an inferred Git root. It refuses nested configuration,
-initialization directly in `$HOME`, and overwriting an existing manifest. `skillsrc -g init` initializes `~/.agents`
-without creating repository Git ignore metadata. `add` requires an existing selected manifest.
+Project `init` creates `skills.toml` in the current directory, not an inferred Git root. It refuses nested
+configuration, initialization directly in `$HOME`, and overwriting an existing manifest. `skillsrc -g init` initializes
+`~/.agents` without creating repository Git ignore metadata. `add` requires an existing selected manifest.
 
 ### Add and remove skills
 
@@ -175,14 +175,14 @@ skillsrc add owner/repository --all        # add every discovered skill
 skillsrc add ../local-skills private-skill # add from a local directory
 ```
 
-Use `--ref` with a Git source to select a branch, tag, or full commit hash. Use `--invoke-user-only` with named skills or
-`--all` to write them with the `!` shorthand and install them with model invocation disabled. `--all` cannot be combined
-with explicit skill names.
+Use `--ref` with a Git source to select a branch, tag, or full commit hash. Use `--invoke-user-only` with named skills
+or `--all` to write them with the `!` shorthand and install them with model invocation disabled. `--all` cannot be
+combined with explicit skill names.
 
 With no skill names, `add` only lists what the source contains. Added skills are validated before the manifest changes.
 
-`remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by the selected
-manifest. It does not update the remaining Git sources. `rm` is an alias for `remove`.
+`remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by the
+selected manifest. It does not update the remaining Git sources. `rm` is an alias for `remove`.
 
 ### Check, synchronize, and update
 
@@ -197,10 +197,10 @@ These commands intentionally have different effects:
 `sync` reproduces locked Git commits, creates missing lock entries, refreshes local content, installs the declared set,
 and prunes no-longer-declared managed skills. It does not advance an existing Git lock.
 
-`outdated` fetches configured Git refs and reports each Git source as up to date or update available without changing the
-manifest, lockfile, project metadata, or installed skills. Available Git updates show exact tags when present, otherwise
-commit dates, alongside short commit hashes. Local sources are resolved read-only and reported as matching the lock or
-having unsynchronized content changes.
+`outdated` fetches configured Git refs and reports each Git source as up to date or update available without changing
+the manifest, lockfile, project metadata, or installed skills. Available Git updates show exact tags when present,
+otherwise commit dates, alongside short commit hashes. Local sources are resolved read-only and reported as matching the
+lock or having unsynchronized content changes.
 
 `update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, and then
 performs a sync. `outdated` accepts the same optional selectors. Local sources have no remote version; full commit refs
