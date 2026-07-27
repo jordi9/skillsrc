@@ -1,0 +1,33 @@
+version: 2
+
+project_name: skillsrc
+
+builds:
+  - id: skillsrc
+    main: ./cmd/skillsrc
+    binary: skillsrc
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/jordi9/skillsrc/internal/skillsrc.Version={{ .Tag }}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true

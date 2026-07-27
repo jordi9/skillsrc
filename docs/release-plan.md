@@ -4,10 +4,12 @@ Releases are tag-driven:
 
 1. `release.sh` finds the latest release, asks for a patch, minor, or major bump, and pushes the calculated tag from
    `main`.
-2. GitHub Actions runs tests and vet.
-3. The publish workflow builds macOS and Linux archives for arm64 and amd64.
-4. `git-cliff` generates release notes from the repository history.
-5. The workflow publishes the archives and `checksums.txt` in a GitHub Release.
+2. GitHub Actions validates the tag, runs tests and vet, and verifies a release build.
+3. `git-cliff` generates release notes from the repository history.
+4. GoReleaser builds macOS and Linux archives for arm64 and amd64, generates `checksums.txt`, and publishes the GitHub
+   Release.
+
+`.goreleaser.yaml` is the source of truth for release targets, build flags, archive contents, and asset names.
 
 ## Release
 
