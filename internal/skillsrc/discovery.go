@@ -21,7 +21,42 @@ type DiscoveredSkill struct {
 	Path string
 }
 
+type discoveredSkillCandidate struct {
+	DiscoveredSkill
+	priority int
+}
+
+type skillCandidatePath struct {
+	path     string
+	priority int
+}
+
 func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
+	discovered, err := discoverSkillCandidates(root)
+	if err != nil {
+		return nil, err
+	}
+	found := make(map[string]DiscoveredSkill, len(discovered))
+	priorities := make(map[string]int, len(discovered))
+	for _, skill := range discovered {
+		if previous, exists := found[skill.Name]; exists {
+			previousPriority := priorities[skill.Name]
+			if previousPriority == skill.priority {
+				return nil, &ValidationError{Problem: fmt.Sprintf("ambiguous skill %q at %q and %q", skill.Name, previous.Path, skill.Path)}
+			}
+			if skill.priority < previousPriority {
+				found[skill.Name] = skill.DiscoveredSkill
+				priorities[skill.Name] = skill.priority
+			}
+			continue
+		}
+		found[skill.Name] = skill.DiscoveredSkill
+		priorities[skill.Name] = skill.priority
+	}
+	return found, nil
+}
+
+func discoverSkillCandidates(root string) ([]discoveredSkillCandidate, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve source root: %w", err)
@@ -34,11 +69,12 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 		return nil, fmt.Errorf("source root %q is not a real directory", root)
 	}
 
-	candidates := make([]string, 0)
+	candidatePaths := make([]skillCandidatePath, 0)
 	if isRegularFile(filepath.Join(root, "SKILL.md")) {
-		candidates = append(candidates, root)
+		candidatePaths = append(candidatePaths, skillCandidatePath{path: root, priority: 1})
 	}
-	for _, parent := range []string{"", "skills", filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
+	for index, parent := range []string{"", "skills", filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
+		priority := index + 1
 		dir := filepath.Join(root, parent)
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
@@ -53,7 +89,7 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 			}
 			candidate := filepath.Join(dir, entry.Name())
 			if isRegularFile(filepath.Join(candidate, "SKILL.md")) {
-				candidates = append(candidates, candidate)
+				candidatePaths = append(candidatePaths, skillCandidatePath{path: candidate, priority: priority})
 				continue
 			}
 			// Some skill repositories group skills by one category below skills/*.
@@ -65,41 +101,38 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 				for _, child := range children {
 					childCandidate := filepath.Join(candidate, child.Name())
 					if child.IsDir() && isRegularFile(filepath.Join(childCandidate, "SKILL.md")) {
-						candidates = append(candidates, childCandidate)
+						candidatePaths = append(candidatePaths, skillCandidatePath{path: childCandidate, priority: priority})
 					}
 				}
 			}
 		}
 	}
 
-	found := make(map[string]DiscoveredSkill)
-	for _, candidate := range candidates {
-		if err := ensureNoSymlinkPath(root, candidate); err != nil {
+	discovered := make([]discoveredSkillCandidate, 0, len(candidatePaths))
+	for _, candidate := range candidatePaths {
+		if err := ensureNoSymlinkPath(root, candidate.path); err != nil {
 			return nil, err
 		}
-		if _, err := HashSkill(candidate); err != nil {
-			return nil, fmt.Errorf("validate discovered skill %q: %w", candidate, err)
+		if _, err := HashSkill(candidate.path); err != nil {
+			return nil, fmt.Errorf("validate discovered skill %q: %w", candidate.path, err)
 		}
-		name, err := skillName(candidate)
+		name, err := skillName(candidate.path)
 		if err != nil {
 			return nil, err
 		}
-		relative, err := filepath.Rel(root, candidate)
+		relative, err := filepath.Rel(root, candidate.path)
 		if err != nil {
 			return nil, fmt.Errorf("make skill path relative: %w", err)
 		}
 		if err := ValidateRelativeSkillPath(relative); err != nil && relative != "." {
 			return nil, err
 		}
-		if relative == "." {
-			relative = "."
-		}
-		if previous, exists := found[name]; exists && previous.Path != filepath.ToSlash(relative) {
-			return nil, &ValidationError{Problem: fmt.Sprintf("ambiguous skill %q at %q and %q", name, previous.Path, filepath.ToSlash(relative))}
-		}
-		found[name] = DiscoveredSkill{Name: name, Path: filepath.ToSlash(relative)}
+		discovered = append(discovered, discoveredSkillCandidate{
+			DiscoveredSkill: DiscoveredSkill{Name: name, Path: filepath.ToSlash(relative)},
+			priority:        candidate.priority,
+		})
 	}
-	return found, nil
+	return discovered, nil
 }
 
 func ensureNoSymlinkPath(root, path string) error {

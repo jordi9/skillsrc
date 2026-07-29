@@ -280,6 +280,51 @@ func TestCLIAddSourceListsAvailableSkillsWithoutChangingManifest(t *testing.T) {
 	assert.NoFileExists(t, options.LockPath)
 }
 
+func TestCLIAddSourceListsDuplicateSkillNameOnce(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, ".agents", "skills", "impeccable"), "impeccable", "agent variant")
+	makeSkill(t, filepath.Join(local, ".claude", "skills", "impeccable"), "impeccable", "claude variant")
+	manifest := filepath.Join(root, "skills.toml")
+	original := []byte("version = 1\n")
+	require.NoError(t, os.WriteFile(manifest, original, 0o644))
+	options := testOptions(root, manifest)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), "Available skills from "+displaySource(local, filepath.Dir(root))+":\n  • impeccable\n")
+	assert.Equal(t, 1, strings.Count(output.String(), "  • impeccable\n"))
+	actual, err := os.ReadFile(manifest)
+	require.NoError(t, err)
+	assert.Equal(t, original, actual)
+	assert.NoFileExists(t, options.LockPath)
+}
+
+func TestCLIAddResolvesDuplicateNameToAgentsSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, ".agents", "skills", "impeccable"), "impeccable", "agent variant")
+	makeSkill(t, filepath.Join(local, ".claude", "skills", "impeccable"), "impeccable", "claude variant")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "impeccable"}, options, &output, &errorOutput), errorOutput.String())
+	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "impeccable", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(installed), "agent variant")
+	assert.NotContains(t, string(installed), "claude variant")
+
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	require.Len(t, lock.Sources, 1)
+	require.Len(t, lock.Sources[0].Skills, 1)
+	assert.Equal(t, ".agents/skills/impeccable", lock.Sources[0].Skills[0].Path)
+}
+
 func TestCLIAddAllFetchesRepositoryOnce(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

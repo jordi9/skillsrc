@@ -1,6 +1,7 @@
 package skillsrc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,15 +36,58 @@ func TestDiscoverSkillsUsesOnlyConventionalLocations(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkillsRejectsAmbiguousNames(t *testing.T) {
+func TestDiscoverSkillsUsesConventionalLocationPrecedenceForDuplicateNames(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	makeSkill(t, filepath.Join(root, "same"), "same", "one")
-	makeSkill(t, filepath.Join(root, "skills", "same"), "same", "two")
+	makeSkill(t, filepath.Join(root, "same"), "same", "direct")
+	makeSkill(t, filepath.Join(root, "skills", "same"), "same", "skills")
+	makeSkill(t, filepath.Join(root, ".agents", "skills", "same"), "same", "agents")
+	makeSkill(t, filepath.Join(root, ".claude", "skills", "same"), "same", "claude")
 
-	_, err := DiscoverSkills(root)
-	if err == nil || !strings.Contains(err.Error(), `ambiguous skill "same"`) {
-		t.Fatalf("DiscoverSkills() error = %v", err)
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["same"].Path; got != "same" {
+		t.Fatalf("duplicate skill path = %q, want direct skill path", got)
+	}
+}
+
+func TestDiscoverSkillsRejectsDuplicateNamesAtSamePriority(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		paths []string
+	}{
+		{name: "direct children", paths: []string{"one", "two"}},
+		{name: "root and direct child", paths: []string{".", "one"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			for index, path := range test.paths {
+				makeSkill(t, filepath.Join(root, path), "same", fmt.Sprintf("variant %d", index))
+			}
+
+			_, err := DiscoverSkills(root)
+			if err == nil || !strings.Contains(err.Error(), `ambiguous skill "same"`) {
+				t.Fatalf("DiscoverSkills() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscoverSkillsPrefersAgentsSkillOverClaudeSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	makeSkill(t, filepath.Join(root, ".agents", "skills", "impeccable"), "impeccable", "agents")
+	makeSkill(t, filepath.Join(root, ".claude", "skills", "impeccable"), "impeccable", "claude")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["impeccable"].Path; got != ".agents/skills/impeccable" {
+		t.Fatalf("duplicate skill path = %q, want .agents skill path", got)
 	}
 }
 

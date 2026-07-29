@@ -338,12 +338,16 @@ func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *
 			return nil, err
 		}
 	}
-	found, err := DiscoverSkills(root)
+	discovered, err := discoverSkillCandidates(root)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(found))
-	for name := range found {
+	uniqueNames := make(map[string]struct{}, len(discovered))
+	for _, skill := range discovered {
+		uniqueNames[skill.Name] = struct{}{}
+	}
+	names := make([]string, 0, len(uniqueNames))
+	for name := range uniqueNames {
 		names = append(names, name)
 	}
 	sort.Strings(names)
