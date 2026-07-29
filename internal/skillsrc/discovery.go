@@ -69,19 +69,27 @@ func discoverSkillCandidates(root string) ([]discoveredSkillCandidate, error) {
 		return nil, fmt.Errorf("source root %q is not a real directory", root)
 	}
 
-	candidatePaths := make([]skillCandidatePath, 0)
+	candidatePaths, err := collectSkillCandidatePaths(root)
+	if err != nil {
+		return nil, err
+	}
+	return materializeSkillCandidates(root, candidatePaths)
+}
+
+func collectSkillCandidatePaths(root string) ([]skillCandidatePath, error) {
+	candidates := make([]skillCandidatePath, 0)
 	if isRegularFile(filepath.Join(root, "SKILL.md")) {
-		candidatePaths = append(candidatePaths, skillCandidatePath{path: root, priority: 1})
+		candidates = append(candidates, skillCandidatePath{path: root, priority: 1})
 	}
 	for index, parent := range []string{"", "skills", filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
 		priority := index + 1
 		dir := filepath.Join(root, parent)
-		entries, readErr := os.ReadDir(dir)
-		if readErr != nil {
-			if os.IsNotExist(readErr) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("scan %q: %w", dir, readErr)
+			return nil, fmt.Errorf("scan %q: %w", dir, err)
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -89,27 +97,40 @@ func discoverSkillCandidates(root string) ([]discoveredSkillCandidate, error) {
 			}
 			candidate := filepath.Join(dir, entry.Name())
 			if isRegularFile(filepath.Join(candidate, "SKILL.md")) {
-				candidatePaths = append(candidatePaths, skillCandidatePath{path: candidate, priority: priority})
+				candidates = append(candidates, skillCandidatePath{path: candidate, priority: priority})
 				continue
 			}
 			// Some skill repositories group skills by one category below skills/*.
 			if parent == "skills" {
-				children, childErr := os.ReadDir(candidate)
-				if childErr != nil {
-					return nil, fmt.Errorf("scan skill category %q: %w", candidate, childErr)
+				categorized, err := collectCategorizedSkillPaths(candidate, priority)
+				if err != nil {
+					return nil, err
 				}
-				for _, child := range children {
-					childCandidate := filepath.Join(candidate, child.Name())
-					if child.IsDir() && isRegularFile(filepath.Join(childCandidate, "SKILL.md")) {
-						candidatePaths = append(candidatePaths, skillCandidatePath{path: childCandidate, priority: priority})
-					}
-				}
+				candidates = append(candidates, categorized...)
 			}
 		}
 	}
+	return candidates, nil
+}
 
-	discovered := make([]discoveredSkillCandidate, 0, len(candidatePaths))
-	for _, candidate := range candidatePaths {
+func collectCategorizedSkillPaths(category string, priority int) ([]skillCandidatePath, error) {
+	children, err := os.ReadDir(category)
+	if err != nil {
+		return nil, fmt.Errorf("scan skill category %q: %w", category, err)
+	}
+	var candidates []skillCandidatePath
+	for _, child := range children {
+		candidate := filepath.Join(category, child.Name())
+		if child.IsDir() && isRegularFile(filepath.Join(candidate, "SKILL.md")) {
+			candidates = append(candidates, skillCandidatePath{path: candidate, priority: priority})
+		}
+	}
+	return candidates, nil
+}
+
+func materializeSkillCandidates(root string, candidates []skillCandidatePath) ([]discoveredSkillCandidate, error) {
+	discovered := make([]discoveredSkillCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
 		if err := ensureNoSymlinkPath(root, candidate.path); err != nil {
 			return nil, err
 		}
@@ -207,7 +228,7 @@ func skillFrontmatterLines(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read SKILL.md in %q: %w", dir, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(io.LimitReader(file, 64<<10))
 	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
@@ -232,7 +253,7 @@ func ValidateRelativeSkillPath(path string) error {
 		return &ValidationError{Problem: fmt.Sprintf("invalid skill path %q", path)}
 	}
 	clean := filepath.Clean(filepath.FromSlash(path))
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if clean == "." || !filepath.IsLocal(clean) {
 		return &ValidationError{Problem: fmt.Sprintf("invalid or escaping skill path %q", path)}
 	}
 	return nil
@@ -250,8 +271,16 @@ func HashSkill(dir string) (string, error) {
 		return "", &ValidationError{Problem: fmt.Sprintf("skill %q has no regular SKILL.md", dir)}
 	}
 
+	files, err := collectSkillFiles(dir)
+	if err != nil {
+		return "", fmt.Errorf("inspect skill %q: %w", dir, err)
+	}
+	return hashSkillFiles(dir, files)
+}
+
+func collectSkillFiles(dir string) ([]string, error) {
 	files := make([]string, 0)
-	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -275,9 +304,13 @@ func HashSkill(dir string) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("inspect skill %q: %w", dir, err)
+		return nil, err
 	}
 	sort.Strings(files)
+	return files, nil
+}
+
+func hashSkillFiles(dir string, files []string) (string, error) {
 	digest := sha256.New()
 	for _, relative := range files {
 		path := filepath.Join(dir, relative)

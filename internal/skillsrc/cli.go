@@ -22,6 +22,21 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	if runtime.Err == nil {
 		runtime.Err = io.Discard
 	}
+	invocation, exitCode, done := prepareCLIInvocation(args, runtime)
+	if done {
+		return exitCode
+	}
+	return runCLIInvocation(ctx, invocation, runtime)
+}
+
+type cliInvocation struct {
+	command, cacheDir, gitBinary string
+	args                         []string
+	request                      ScopeRequest
+	autoUserScope                bool
+}
+
+func prepareCLIInvocation(args []string, runtime CLIOptions) (cliInvocation, int, bool) {
 	global := flag.NewFlagSet("skillsrc", flag.ContinueOnError)
 	global.SetOutput(io.Discard)
 	var user, help, showVersion bool
@@ -37,51 +52,19 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	git := global.String("git", runtime.GitBinary, "git executable")
 	global.Usage = func() {}
 	if err := global.Parse(args); err != nil {
-		return cliUsageError(runtime.Err, err.Error())
+		return cliInvocation{}, cliUsageError(runtime.Err, err.Error()), true
 	}
 	if help {
 		printUsage(runtime.Out)
-		return 0
+		return cliInvocation{}, 0, true
 	}
 	if showVersion {
 		printVersion(runtime.Out, runtime.Version)
-		return 0
+		return cliInvocation{}, 0, true
 	}
-	remaining := global.Args()
-	if len(remaining) == 0 {
-		printUsage(runtime.Out)
-		return 0
-	}
-	command := remaining[0]
-	if command == "help" {
-		if len(remaining) == 1 {
-			printUsage(runtime.Out)
-			return 0
-		}
-		if len(remaining) == 2 {
-			if spec, ok := commandSpecFor(remaining[1]); ok {
-				printCommandUsage(runtime.Out, spec)
-				return 0
-			}
-			return cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", remaining[1]))
-		}
-		return cliUsageError(runtime.Err, "help accepts at most one command")
-	}
-	spec, known := commandSpecFor(command)
-	if !known {
-		return cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", command))
-	}
-	if len(remaining) == 2 && (remaining[1] == "--help" || remaining[1] == "-h") {
-		printCommandUsage(runtime.Out, spec)
-		return 0
-	}
-	command = spec.name
-	if command == "version" {
-		if len(remaining) != 1 {
-			return cliUsageError(runtime.Err, "version accepts no arguments")
-		}
-		printVersion(runtime.Out, runtime.Version)
-		return 0
+	command, remaining, exitCode, done := resolveCLICommand(global.Args(), runtime)
+	if done {
+		return cliInvocation{}, exitCode, true
 	}
 	explicit := make(map[string]bool)
 	global.Visit(func(found *flag.Flag) { explicit[found.Name] = true })
@@ -95,34 +78,58 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		LockExplicit:     explicit["lock"],
 	}
 	if request.User && request.ManifestExplicit {
-		return cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest")
+		return cliInvocation{}, cliUsageError(runtime.Err, "--global/--user cannot be combined with --manifest"), true
 	}
-	if autoUserScope {
+	return cliInvocation{command, *cache, *git, remaining, request, autoUserScope}, 0, false
+}
+
+func resolveCLICommand(remaining []string, runtime CLIOptions) (string, []string, int, bool) {
+	if len(remaining) == 0 {
+		printUsage(runtime.Out)
+		return "", nil, 0, true
+	}
+	command := remaining[0]
+	if command == "help" {
+		if len(remaining) == 1 {
+			printUsage(runtime.Out)
+			return "", nil, 0, true
+		}
+		if len(remaining) == 2 {
+			if spec, ok := commandSpecFor(remaining[1]); ok {
+				printCommandUsage(runtime.Out, spec)
+				return "", nil, 0, true
+			}
+			return "", nil, cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", remaining[1])), true
+		}
+		return "", nil, cliUsageError(runtime.Err, "help accepts at most one command"), true
+	}
+	spec, known := commandSpecFor(command)
+	if !known {
+		return "", nil, cliUsageError(runtime.Err, fmt.Sprintf("unknown command %q", command)), true
+	}
+	if len(remaining) == 2 && (remaining[1] == "--help" || remaining[1] == "-h") {
+		printCommandUsage(runtime.Out, spec)
+		return "", nil, 0, true
+	}
+	if spec.name == "version" {
+		if len(remaining) != 1 {
+			return "", nil, cliUsageError(runtime.Err, "version accepts no arguments"), true
+		}
+		printVersion(runtime.Out, runtime.Version)
+		return "", nil, 0, true
+	}
+	return spec.name, remaining, 0, false
+}
+
+func runCLIInvocation(ctx context.Context, invocation cliInvocation, runtime CLIOptions) int {
+	if invocation.autoUserScope {
 		line := "• ~/.agents · using user scope"
 		fmt.Fprintln(runtime.Out, styleUserScope(line, supportsColor(runtime.Out)))
 	}
-	if command == "init" {
-		if len(remaining) != 1 {
-			return cliUsageError(runtime.Err, "init accepts no arguments")
-		}
-		layout, err := ResolveInitLayout(request, runtime)
-		if err == nil {
-			err = InitializeManifest(layout.ManifestPath)
-		}
-		if err == nil && layout.ProjectRoot != "" {
-			err = EnsureRootGitignore(layout.ProjectRoot)
-			if err == nil {
-				err = WriteManagedGitignore(layout.ProjectRoot, Lock{Version: SchemaVersion})
-			}
-		}
-		if err != nil {
-			printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
-			return 1
-		}
-		fmt.Fprintf(runtime.Out, "✓ %s · initialized\n", displayPath(layout.ManifestPath, runtime.HomeDir))
-		return 0
+	if invocation.command == "init" {
+		return runInitCLI(invocation.args, invocation.request, runtime)
 	}
-	layout, err := ResolveLayout(request, runtime)
+	layout, err := ResolveLayout(invocation.request, runtime)
 	if err != nil {
 		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
 		return 1
@@ -131,20 +138,23 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 	if lockDir == "" {
 		lockDir = filepath.Join(filepath.Dir(runtime.CacheDir), "locks")
 	}
-	options := Options{
+	engine := NewEngine(Options{
 		ProjectRoot:  layout.ProjectRoot,
 		ManifestPath: layout.ManifestPath,
 		LockPath:     layout.LockPath,
 		TargetDir:    layout.TargetDir,
-		CacheDir:     *cache,
+		CacheDir:     invocation.cacheDir,
 		LockDir:      lockDir,
-		GitBinary:    *git,
-	}
-	engine := NewEngine(options)
+		GitBinary:    invocation.gitBinary,
+	})
+	return runEngineCLI(ctx, engine, invocation, runtime)
+}
 
-	switch command {
+func runEngineCLI(ctx context.Context, engine *Engine, invocation cliInvocation, runtime CLIOptions) int {
+	var err error
+	switch invocation.command {
 	case "sync":
-		if len(remaining) != 1 {
+		if len(invocation.args) != 1 {
 			return cliUsageError(runtime.Err, "sync accepts no arguments")
 		}
 		var result Result
@@ -154,36 +164,21 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		}
 	case "outdated":
 		var result OutdatedResult
-		result, err = engine.Outdated(ctx, remaining[1:])
+		result, err = engine.Outdated(ctx, invocation.args[1:])
 		if err == nil {
 			printOutdated(runtime.Out, result, runtime.HomeDir)
 		}
 	case "update":
-		var result Result
-		result, err = engine.Update(ctx, remaining[1:])
-		if err == nil {
-			printFetches(runtime.Out, result.Fetches, runtime.HomeDir)
-			for _, change := range result.Changes {
-				old := displayCommit(change.Old)
-				if old == "" {
-					old = "(unlocked)"
-				}
-				fmt.Fprintf(runtime.Out, "✓ %s · %s → %s\n", displaySource(change.Source, runtime.HomeDir), old, displayCommit(change.New))
-			}
-			for _, local := range result.LocalSkipped {
-				fmt.Fprintf(runtime.Out, "✓ %s · local content synced\n", displaySource(local, runtime.HomeDir))
-			}
-			printResult(runtime.Out, "Update complete", result, runtime.HomeDir, true)
-		}
+		err = runUpdateCLI(ctx, engine, invocation.args[1:], runtime.Out, runtime.HomeDir)
 	case "add":
-		err = runAddCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
+		err = runAddCLI(ctx, engine, invocation.args[1:], runtime.Out, runtime.HomeDir)
 	case "remove":
-		err = runRemoveCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
+		err = runRemoveCLI(ctx, engine, invocation.args[1:], runtime.Out, runtime.HomeDir)
 	case "list":
-		err = runListCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
+		err = runListCLI(ctx, engine, invocation.args[1:], runtime.Out, runtime.HomeDir)
 	case "doctor":
 		var issues bool
-		issues, err = runDoctorCLI(ctx, engine, remaining[1:], runtime.Out, runtime.HomeDir)
+		issues, err = runDoctorCLI(ctx, engine, invocation.args[1:], runtime.Out, runtime.HomeDir)
 		if err == nil && issues {
 			return 1
 		}
@@ -192,6 +187,48 @@ func RunCLI(ctx context.Context, args []string, runtime CLIOptions) int {
 		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
 		return 1
 	}
+	return 0
+}
+
+func runUpdateCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
+	result, err := engine.Update(ctx, args)
+	if err != nil {
+		return err
+	}
+	printFetches(output, result.Fetches, home)
+	for _, change := range result.Changes {
+		old := displayCommit(change.Old)
+		if old == "" {
+			old = "(unlocked)"
+		}
+		fmt.Fprintf(output, "✓ %s · %s → %s\n", displaySource(change.Source, home), old, displayCommit(change.New))
+	}
+	for _, local := range result.LocalSkipped {
+		fmt.Fprintf(output, "✓ %s · local content synced\n", displaySource(local, home))
+	}
+	printResult(output, "Update complete", result, home, true)
+	return nil
+}
+
+func runInitCLI(args []string, request ScopeRequest, runtime CLIOptions) int {
+	if len(args) != 1 {
+		return cliUsageError(runtime.Err, "init accepts no arguments")
+	}
+	layout, err := ResolveInitLayout(request, runtime)
+	if err == nil {
+		err = InitializeManifest(layout.ManifestPath)
+	}
+	if err == nil && layout.ProjectRoot != "" {
+		err = EnsureRootGitignore(layout.ProjectRoot)
+		if err == nil {
+			err = WriteManagedGitignore(layout.ProjectRoot, Lock{Version: SchemaVersion})
+		}
+	}
+	if err != nil {
+		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
+		return 1
+	}
+	fmt.Fprintf(runtime.Out, "✓ %s · initialized\n", displayPath(layout.ManifestPath, runtime.HomeDir))
 	return 0
 }
 
@@ -467,28 +504,9 @@ type addArguments struct {
 var skillsCLISpecifierPattern = regexp.MustCompile(`^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9][A-Za-z0-9._-]*)$`)
 
 func parseAddArgs(args []string) (addArguments, error) {
-	var parsed addArguments
-	var positional []string
-	for index := 0; index < len(args); index++ {
-		argument := args[index]
-		switch {
-		case argument == "--all":
-			parsed.all = true
-		case argument == "--invoke-user-only":
-			parsed.userOnly = true
-		case argument == "--ref":
-			index++
-			if index >= len(args) {
-				return parsed, errors.New("--ref requires a branch, tag, or full commit hash")
-			}
-			parsed.ref = args[index]
-		case strings.HasPrefix(argument, "--ref="):
-			parsed.ref = strings.TrimPrefix(argument, "--ref=")
-		case strings.HasPrefix(argument, "-"):
-			return parsed, fmt.Errorf("unknown add option %q", argument)
-		default:
-			positional = append(positional, argument)
-		}
+	parsed, positional, err := parseAddOptions(args)
+	if err != nil {
+		return parsed, err
 	}
 	if len(positional) == 0 {
 		return parsed, errors.New("add requires a source; optionally followed by skill names")
@@ -507,6 +525,33 @@ func parseAddArgs(args []string) (addArguments, error) {
 		return parsed, errors.New("--invoke-user-only requires skill names or --all")
 	}
 	return parsed, nil
+}
+
+func parseAddOptions(args []string) (addArguments, []string, error) {
+	var parsed addArguments
+	var positional []string
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		switch {
+		case argument == "--all":
+			parsed.all = true
+		case argument == "--invoke-user-only":
+			parsed.userOnly = true
+		case argument == "--ref":
+			index++
+			if index >= len(args) {
+				return parsed, positional, errors.New("--ref requires a branch, tag, or full commit hash")
+			}
+			parsed.ref = args[index]
+		case strings.HasPrefix(argument, "--ref="):
+			parsed.ref = strings.TrimPrefix(argument, "--ref=")
+		case strings.HasPrefix(argument, "-"):
+			return parsed, positional, fmt.Errorf("unknown add option %q", argument)
+		default:
+			positional = append(positional, argument)
+		}
+	}
+	return parsed, positional, nil
 }
 
 func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {

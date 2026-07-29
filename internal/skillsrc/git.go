@@ -85,17 +85,7 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 		return "", err
 	}
 	if !refresh && lockedCommit != "" {
-		if err := validateCommitID(lockedCommit); err != nil {
-			return "", err
-		}
-		if operation.hasCommit(ctx, acquired.dir, lockedCommit) {
-			return lockedCommit, nil
-		}
-		if err := operation.fetchExact(ctx, acquired, lockedCommit); err != nil {
-			return "", fmt.Errorf("fetch locked commit %s from %s: %w", lockedCommit, rawRepo, err)
-		}
-		operation.fetches = append(operation.fetches, FetchEvent{Source: rawRepo, Reason: "locked commit missing from cache", Commit: lockedCommit})
-		return lockedCommit, nil
+		return operation.resolveLockedCommit(ctx, acquired, rawRepo, lockedCommit)
 	}
 
 	if isCommitID(ref) && !operation.hasCommit(ctx, acquired.dir, ref) {
@@ -120,6 +110,24 @@ func (operation *GitOperation) Resolve(ctx context.Context, rawRepo, ref string,
 	if _, err := operation.run(ctx, "--git-dir="+acquired.dir, "update-ref", "refs/skillsrc/pins/"+commit, commit); err != nil {
 		return "", fmt.Errorf("pin commit %s: %w", commit, err)
 	}
+	return commit, nil
+}
+
+func (operation *GitOperation) resolveLockedCommit(
+	ctx context.Context, acquired *acquiredRepository, rawRepo, commit string,
+) (string, error) {
+	if err := validateCommitID(commit); err != nil {
+		return "", err
+	}
+	if operation.hasCommit(ctx, acquired.dir, commit) {
+		return commit, nil
+	}
+	if err := operation.fetchExact(ctx, acquired, commit); err != nil {
+		return "", fmt.Errorf("fetch locked commit %s from %s: %w", commit, rawRepo, err)
+	}
+	operation.fetches = append(operation.fetches, FetchEvent{
+		Source: rawRepo, Reason: "locked commit missing from cache", Commit: commit,
+	})
 	return commit, nil
 }
 
@@ -207,18 +215,29 @@ func NormalizeRepository(raw string) (Repository, error) {
 		return Repository{Identity: "github.com/" + strings.ToLower(path), URL: "https://github.com/" + path + ".git"}, nil
 	}
 	if strings.HasPrefix(raw, "git@") && !strings.Contains(raw, "://") {
-		rest := strings.TrimPrefix(raw, "git@")
-		separator := strings.IndexAny(rest, ":/")
-		if separator <= 0 || separator == len(rest)-1 {
-			return Repository{}, &ValidationError{Problem: fmt.Sprintf("invalid SSH repository %q", raw)}
-		}
-		host, path := rest[:separator], rest[separator+1:]
-		path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
-		if host == "" || path == "" {
-			return Repository{}, &ValidationError{Problem: fmt.Sprintf("invalid SSH repository %q", raw)}
-		}
-		return Repository{Identity: strings.ToLower(host) + "/" + strings.ToLower(path), URL: "ssh://git@" + host + "/" + path + ".git"}, nil
+		return normalizeSCPRepository(raw)
 	}
+	return normalizeRepositoryURL(raw)
+}
+
+func normalizeSCPRepository(raw string) (Repository, error) {
+	rest := strings.TrimPrefix(raw, "git@")
+	separator := strings.IndexAny(rest, ":/")
+	if separator <= 0 || separator == len(rest)-1 {
+		return Repository{}, &ValidationError{Problem: fmt.Sprintf("invalid SSH repository %q", raw)}
+	}
+	host, path := rest[:separator], rest[separator+1:]
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	if host == "" || path == "" {
+		return Repository{}, &ValidationError{Problem: fmt.Sprintf("invalid SSH repository %q", raw)}
+	}
+	return Repository{
+		Identity: strings.ToLower(host) + "/" + strings.ToLower(path),
+		URL:      "ssh://git@" + host + "/" + path + ".git",
+	}, nil
+}
+
+func normalizeRepositoryURL(raw string) (Repository, error) {
 	parsed, err := url.Parse(raw)
 	if err == nil && (parsed.Scheme == "https" || parsed.Scheme == "ssh") && parsed.Hostname() != "" {
 		if parsed.User != nil {
@@ -247,51 +266,68 @@ func (operation *GitOperation) repository(ctx context.Context, repository Reposi
 	if acquired := operation.acquired[repository.Identity]; acquired != nil {
 		return acquired, nil
 	}
-	if err := os.MkdirAll(operation.cacheDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create repository cache: %w", err)
-	}
-	if !operation.cleaned {
-		entries, err := os.ReadDir(operation.cacheDir)
-		if err != nil {
-			return nil, fmt.Errorf("inspect repository cache: %w", err)
-		}
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".repo-init-") || strings.Contains(entry.Name(), ".corrupt-") {
-				if err := os.RemoveAll(filepath.Join(operation.cacheDir, entry.Name())); err != nil {
-					return nil, fmt.Errorf("clean interrupted cache initialization %q: %w", entry.Name(), err)
-				}
-			}
-		}
-		operation.cleaned = true
+	if err := operation.prepareCache(); err != nil {
+		return nil, err
 	}
 	key := sha256.Sum256([]byte(repository.Identity))
 	dir := filepath.Join(operation.cacheDir, hex.EncodeToString(key[:]))
-	if valid, _ := operation.validBareRepository(ctx, dir, repository.URL); !valid {
-		if _, err := os.Lstat(dir); err == nil {
-			quarantine := dir + ".corrupt-" + strconvTime()
-			if err := os.Rename(dir, quarantine); err != nil {
-				return nil, fmt.Errorf("quarantine invalid cache %q: %w", dir, err)
-			}
-			defer os.RemoveAll(quarantine)
-		}
-		temporary, err := os.MkdirTemp(operation.cacheDir, ".repo-init-")
-		if err != nil {
-			return nil, fmt.Errorf("create cache temporary directory: %w", err)
-		}
-		defer os.RemoveAll(temporary)
-		if _, err := operation.run(ctx, "init", "--bare", temporary); err != nil {
-			return nil, fmt.Errorf("initialize repository cache: %w", err)
-		}
-		if _, err := operation.run(ctx, "--git-dir="+temporary, "remote", "add", "origin", repository.URL); err != nil {
-			return nil, fmt.Errorf("configure repository cache: %w", err)
-		}
-		if err := os.Rename(temporary, dir); err != nil {
-			return nil, fmt.Errorf("publish repository cache: %w", err)
-		}
+	if err := operation.ensureRepository(ctx, dir, repository.URL); err != nil {
+		return nil, err
 	}
 	acquired := &acquiredRepository{dir: dir}
 	operation.acquired[repository.Identity] = acquired
 	return acquired, nil
+}
+
+func (operation *GitOperation) prepareCache() error {
+	if err := os.MkdirAll(operation.cacheDir, 0o755); err != nil {
+		return fmt.Errorf("create repository cache: %w", err)
+	}
+	if operation.cleaned {
+		return nil
+	}
+	entries, err := os.ReadDir(operation.cacheDir)
+	if err != nil {
+		return fmt.Errorf("inspect repository cache: %w", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".repo-init-") && !strings.Contains(entry.Name(), ".corrupt-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(operation.cacheDir, entry.Name())); err != nil {
+			return fmt.Errorf("clean interrupted cache initialization %q: %w", entry.Name(), err)
+		}
+	}
+	operation.cleaned = true
+	return nil
+}
+
+func (operation *GitOperation) ensureRepository(ctx context.Context, dir, remote string) error {
+	if valid, _ := operation.validBareRepository(ctx, dir, remote); valid {
+		return nil
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		quarantine := dir + ".corrupt-" + strconvTime()
+		if err := os.Rename(dir, quarantine); err != nil {
+			return fmt.Errorf("quarantine invalid cache %q: %w", dir, err)
+		}
+		defer func() { _ = os.RemoveAll(quarantine) }()
+	}
+	temporary, err := os.MkdirTemp(operation.cacheDir, ".repo-init-")
+	if err != nil {
+		return fmt.Errorf("create cache temporary directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(temporary) }()
+	if _, err := operation.run(ctx, "init", "--bare", temporary); err != nil {
+		return fmt.Errorf("initialize repository cache: %w", err)
+	}
+	if _, err := operation.run(ctx, "--git-dir="+temporary, "remote", "add", "origin", remote); err != nil {
+		return fmt.Errorf("configure repository cache: %w", err)
+	}
+	if err := os.Rename(temporary, dir); err != nil {
+		return fmt.Errorf("publish repository cache: %w", err)
+	}
+	return nil
 }
 
 func (operation *GitOperation) validBareRepository(ctx context.Context, dir, remote string) (bool, error) {
@@ -398,68 +434,91 @@ func (operation *GitOperation) lock(ctx context.Context) (func(), error) {
 	return unlock, nil
 }
 
+type archivedSymlink struct{ path, target string }
+
+type archiveExtraction struct {
+	destination string
+	seen        map[string]struct{}
+	symlinks    []archivedSymlink
+}
+
 func extractTar(ctx context.Context, reader io.Reader, destination string) error {
 	archive := tar.NewReader(reader)
-	seen := make(map[string]struct{})
-	type archivedSymlink struct{ path, target string }
-	var symlinks []archivedSymlink
+	extraction := archiveExtraction{destination: destination, seen: make(map[string]struct{})}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
-			for _, link := range symlinks {
-				if err := os.MkdirAll(filepath.Dir(link.path), 0o755); err != nil {
-					return fmt.Errorf("create archive symlink parent: %w", err)
-				}
-				if err := os.Symlink(link.target, link.path); err != nil {
-					return fmt.Errorf("create archive symlink %q: %w", link.path, err)
-				}
-			}
-			return nil
+			return extraction.createSymlinks()
 		}
 		if err != nil {
 			return fmt.Errorf("read Git archive: %w", err)
 		}
-		name := filepath.Clean(filepath.FromSlash(header.Name))
-		if name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return &ValidationError{Problem: fmt.Sprintf("Git archive contains escaping path %q", header.Name)}
-		}
-		if _, exists := seen[name]; exists {
-			return &ValidationError{Problem: fmt.Sprintf("Git archive contains duplicate path %q", header.Name)}
-		}
-		seen[name] = struct{}{}
-		path := filepath.Join(destination, name)
-		switch header.Typeflag {
-		case tar.TypeXHeader, tar.TypeXGlobalHeader:
-			continue
-		case tar.TypeDir:
-			if err := os.MkdirAll(path, os.FileMode(header.Mode)&0o755); err != nil {
-				return fmt.Errorf("create archive directory %q: %w", path, err)
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return fmt.Errorf("create archive parent: %w", err)
-			}
-			file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(header.Mode)&0o755)
-			if err != nil {
-				return fmt.Errorf("create archive file %q: %w", path, err)
-			}
-			_, copyErr := io.CopyN(file, archive, header.Size)
-			closeErr := file.Close()
-			if copyErr != nil {
-				return fmt.Errorf("extract archive file %q: %w", path, copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("close archive file %q: %w", path, closeErr)
-			}
-		case tar.TypeSymlink:
-			symlinks = append(symlinks, archivedSymlink{path: path, target: header.Linkname})
-		default:
-			return &ValidationError{Problem: fmt.Sprintf("Git archive path %q has unsupported type", header.Name)}
+		if err := extraction.extractEntry(archive, header); err != nil {
+			return err
 		}
 	}
+}
+
+func (extraction *archiveExtraction) extractEntry(archive io.Reader, header *tar.Header) error {
+	name := filepath.Clean(filepath.FromSlash(header.Name))
+	if name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		return &ValidationError{Problem: fmt.Sprintf("Git archive contains escaping path %q", header.Name)}
+	}
+	if _, exists := extraction.seen[name]; exists {
+		return &ValidationError{Problem: fmt.Sprintf("Git archive contains duplicate path %q", header.Name)}
+	}
+	extraction.seen[name] = struct{}{}
+	path := filepath.Join(extraction.destination, name)
+	switch header.Typeflag {
+	case tar.TypeXHeader, tar.TypeXGlobalHeader:
+		return nil
+	case tar.TypeDir:
+		if err := os.MkdirAll(path, os.FileMode(header.Mode)&0o755); err != nil {
+			return fmt.Errorf("create archive directory %q: %w", path, err)
+		}
+		return nil
+	case tar.TypeReg:
+		return extractArchiveFile(archive, header, path)
+	case tar.TypeSymlink:
+		extraction.symlinks = append(extraction.symlinks, archivedSymlink{path: path, target: header.Linkname})
+		return nil
+	default:
+		return &ValidationError{Problem: fmt.Sprintf("Git archive path %q has unsupported type", header.Name)}
+	}
+}
+
+func extractArchiveFile(archive io.Reader, header *tar.Header, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create archive parent: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(header.Mode)&0o755)
+	if err != nil {
+		return fmt.Errorf("create archive file %q: %w", path, err)
+	}
+	_, copyErr := io.CopyN(file, archive, header.Size)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return fmt.Errorf("extract archive file %q: %w", path, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close archive file %q: %w", path, closeErr)
+	}
+	return nil
+}
+
+func (extraction *archiveExtraction) createSymlinks() error {
+	for _, link := range extraction.symlinks {
+		if err := os.MkdirAll(filepath.Dir(link.path), 0o755); err != nil {
+			return fmt.Errorf("create archive symlink parent: %w", err)
+		}
+		if err := os.Symlink(link.target, link.path); err != nil {
+			return fmt.Errorf("create archive symlink %q: %w", link.path, err)
+		}
+	}
+	return nil
 }
 
 func isCommitID(value string) bool {

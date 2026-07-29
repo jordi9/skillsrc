@@ -217,17 +217,8 @@ func ValidateLock(lock Lock) error {
 	}
 	seen := make(map[string]struct{})
 	for i, source := range lock.Sources {
-		if source.Kind != SourceGit && source.Kind != SourceLocal {
-			return &ValidationError{Problem: fmt.Sprintf("lock source %d has invalid kind %q", i+1, source.Kind)}
-		}
-		if source.Identity == "" {
-			return &ValidationError{Problem: fmt.Sprintf("lock source %d has no identity", i+1)}
-		}
-		if source.Kind == SourceGit && (source.Repo == "" || source.Commit == "" || source.Path != "") {
-			return &ValidationError{Problem: fmt.Sprintf("lock Git source %d has inconsistent fields", i+1)}
-		}
-		if source.Kind == SourceLocal && (source.Path == "" || source.Repo != "" || source.Ref != "" || source.Commit != "") {
-			return &ValidationError{Problem: fmt.Sprintf("lock local source %d has inconsistent fields", i+1)}
+		if err := validateLockSource(source, i+1); err != nil {
+			return err
 		}
 		for _, skill := range source.Skills {
 			if !skillNamePattern.MatchString(skill.Name) || skill.Path == "" || !strings.HasPrefix(skill.Hash, "sha256:") {
@@ -243,6 +234,22 @@ func ValidateLock(lock Lock) error {
 			}
 			seen[skill.Name] = struct{}{}
 		}
+	}
+	return nil
+}
+
+func validateLockSource(source LockSource, position int) error {
+	if source.Kind != SourceGit && source.Kind != SourceLocal {
+		return &ValidationError{Problem: fmt.Sprintf("lock source %d has invalid kind %q", position, source.Kind)}
+	}
+	if source.Identity == "" {
+		return &ValidationError{Problem: fmt.Sprintf("lock source %d has no identity", position)}
+	}
+	if source.Kind == SourceGit && (source.Repo == "" || source.Commit == "" || source.Path != "") {
+		return &ValidationError{Problem: fmt.Sprintf("lock Git source %d has inconsistent fields", position)}
+	}
+	if source.Kind == SourceLocal && (source.Path == "" || source.Repo != "" || source.Ref != "" || source.Commit != "") {
+		return &ValidationError{Problem: fmt.Sprintf("lock local source %d has inconsistent fields", position)}
 	}
 	return nil
 }

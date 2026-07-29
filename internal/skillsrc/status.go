@@ -194,12 +194,8 @@ func installedStatus(installer *installer, target string, skill LockedSkill, dis
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "collision"
 	}
-	data, err := os.ReadFile(filepath.Join(dir, ownershipFile))
-	if err != nil {
-		return "collision"
-	}
-	var marker ownership
-	if json.Unmarshal(data, &marker) != nil || marker.Version != SchemaVersion || marker.Owner != installer.owner || marker.Skill != skill.Name {
+	marker, ok := installedMarker(installer, dir, skill.Name)
+	if !ok {
 		return "collision"
 	}
 	if marker.DisableModelInvocation != disableModelInvocation {
@@ -219,6 +215,18 @@ func installedStatus(installer *installer, target string, skill LockedSkill, dis
 	return "current"
 }
 
+func installedMarker(installer *installer, dir, skill string) (ownership, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, ownershipFile))
+	if err != nil {
+		return ownership{}, false
+	}
+	var marker ownership
+	if json.Unmarshal(data, &marker) != nil || marker.Version != SchemaVersion || marker.Owner != installer.owner || marker.Skill != skill {
+		return ownership{}, false
+	}
+	return marker, true
+}
+
 func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, error) {
 	if repair {
 		if _, err := engine.Sync(ctx); err != nil {
@@ -234,29 +242,7 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 		return DoctorReport{}, err
 	}
 	report := DoctorReport{Issues: []DoctorIssue{}}
-	declared := make(map[string]struct{})
-	for _, source := range manifest.Sources {
-		for _, name := range source.Skills {
-			declared[name] = struct{}{}
-		}
-	}
-	for _, source := range manifest.Sources {
-		if source.Path == "" {
-			continue
-		}
-		current, resolveErr := resolveLocalSource(source)
-		if resolveErr != nil {
-			report.Issues = append(report.Issues, DoctorIssue{Kind: "source", Message: fmt.Sprintf("local source %s is invalid: %v", source.Path, resolveErr)})
-			continue
-		}
-		identity := LocalIdentity(localIdentityPath(source.Path))
-		for _, skill := range current.lock.Skills {
-			locked := findLockedSkill(lock, SourceLocal, identity, source, skill.Name)
-			if locked != nil && (locked.skill.Path != skill.Path || locked.skill.Hash != skill.Hash) {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "source", Skill: skill.Name, Message: "local source content differs from lock"})
-			}
-		}
-	}
+	report.Issues = append(report.Issues, localSourceIssues(manifest, lock)...)
 	for _, status := range statuses {
 		switch status.Status {
 		case "unlocked":
@@ -265,48 +251,8 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 			report.Issues = append(report.Issues, DoctorIssue{Kind: "install", Skill: status.Name, Message: "managed install is " + status.Status})
 		}
 	}
-	for _, source := range lock.Sources {
-		for _, skill := range source.Skills {
-			if _, ok := declared[skill.Name]; !ok {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "lock", Skill: skill.Name, Message: "lock entry is not declared by the manifest"})
-			}
-		}
-		if source.Kind == SourceGit {
-			dir := repositoryCachePath(engine.options.CacheDir, source.Identity)
-			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache is missing for %s", source.Identity)})
-				continue
-			}
-			operation := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
-			repository, normalizeErr := NormalizeRepository(source.Repo)
-			valid := false
-			if normalizeErr == nil {
-				valid, _ = operation.validBareRepository(ctx, dir, repository.URL)
-			}
-			if !valid {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache is invalid for %s", source.Identity)})
-				continue
-			}
-			if !operation.hasCommit(ctx, dir, source.Commit) {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache for %s lacks commit %s", source.Identity, source.Commit)})
-			}
-		}
-	}
-	if entries, err := os.ReadDir(engine.options.CacheDir); err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".repo-init-") || strings.Contains(entry.Name(), ".corrupt-") {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "cache", Message: "interrupted cache artifact " + entry.Name()})
-			}
-		}
-	}
-	if entries, err := os.ReadDir(engine.options.TargetDir); err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.Contains(name, ".skillsrc-tmp-") || strings.Contains(name, ".skillsrc-old-") || strings.Contains(name, ".skillsrc-prune-") || strings.HasSuffix(name, ".skillsrc-txn.json") {
-				report.Issues = append(report.Issues, DoctorIssue{Kind: "install", Message: "interrupted install artifact " + name})
-			}
-		}
-	}
+	report.Issues = append(report.Issues, engine.lockAndCacheIssues(ctx, manifest, lock)...)
+	report.Issues = append(report.Issues, interruptedArtifactIssues(engine.options.CacheDir, engine.options.TargetDir)...)
 	if engine.options.ProjectRoot != "" {
 		projectIssues, err := CheckProjectFiles(engine.options.ProjectRoot, lock)
 		if err != nil {
@@ -324,6 +270,87 @@ func (engine *Engine) Doctor(ctx context.Context, repair bool) (DoctorReport, er
 		return report.Issues[i].Message < report.Issues[j].Message
 	})
 	return report, nil
+}
+
+func localSourceIssues(manifest Manifest, lock Lock) []DoctorIssue {
+	var issues []DoctorIssue
+	for _, source := range manifest.Sources {
+		if source.Path == "" {
+			continue
+		}
+		current, err := resolveLocalSource(source)
+		if err != nil {
+			issues = append(issues, DoctorIssue{Kind: "source", Message: fmt.Sprintf("local source %s is invalid: %v", source.Path, err)})
+			continue
+		}
+		identity := LocalIdentity(localIdentityPath(source.Path))
+		for _, skill := range current.lock.Skills {
+			locked := findLockedSkill(lock, SourceLocal, identity, source, skill.Name)
+			if locked != nil && (locked.skill.Path != skill.Path || locked.skill.Hash != skill.Hash) {
+				issues = append(issues, DoctorIssue{Kind: "source", Skill: skill.Name, Message: "local source content differs from lock"})
+			}
+		}
+	}
+	return issues
+}
+
+func (engine *Engine) lockAndCacheIssues(ctx context.Context, manifest Manifest, lock Lock) []DoctorIssue {
+	declared := make(map[string]struct{})
+	for _, source := range manifest.Sources {
+		for _, name := range source.Skills {
+			declared[name] = struct{}{}
+		}
+	}
+	var issues []DoctorIssue
+	for _, source := range lock.Sources {
+		for _, skill := range source.Skills {
+			if _, ok := declared[skill.Name]; !ok {
+				issues = append(issues, DoctorIssue{Kind: "lock", Skill: skill.Name, Message: "lock entry is not declared by the manifest"})
+			}
+		}
+		if source.Kind != SourceGit {
+			continue
+		}
+		dir := repositoryCachePath(engine.options.CacheDir, source.Identity)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			issues = append(issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache is missing for %s", source.Identity)})
+			continue
+		}
+		operation := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
+		repository, normalizeErr := NormalizeRepository(source.Repo)
+		valid := false
+		if normalizeErr == nil {
+			valid, _ = operation.validBareRepository(ctx, dir, repository.URL)
+		}
+		if !valid {
+			issues = append(issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache is invalid for %s", source.Identity)})
+			continue
+		}
+		if !operation.hasCommit(ctx, dir, source.Commit) {
+			issues = append(issues, DoctorIssue{Kind: "cache", Message: fmt.Sprintf("cache for %s lacks commit %s", source.Identity, source.Commit)})
+		}
+	}
+	return issues
+}
+
+func interruptedArtifactIssues(cacheDir, targetDir string) []DoctorIssue {
+	var issues []DoctorIssue
+	if entries, err := os.ReadDir(cacheDir); err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".repo-init-") || strings.Contains(entry.Name(), ".corrupt-") {
+				issues = append(issues, DoctorIssue{Kind: "cache", Message: "interrupted cache artifact " + entry.Name()})
+			}
+		}
+	}
+	if entries, err := os.ReadDir(targetDir); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.Contains(name, ".skillsrc-tmp-") || strings.Contains(name, ".skillsrc-old-") || strings.Contains(name, ".skillsrc-prune-") || strings.HasSuffix(name, ".skillsrc-txn.json") {
+				issues = append(issues, DoctorIssue{Kind: "install", Message: "interrupted install artifact " + name})
+			}
+		}
+	}
+	return issues
 }
 
 func localIdentityPath(path string) string {

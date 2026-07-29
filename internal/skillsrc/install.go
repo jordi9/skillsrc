@@ -127,6 +127,17 @@ func (installer *installer) install(ctx context.Context, name, sourceDir, expect
 			_ = os.RemoveAll(staging)
 		}
 	}()
+	if err := installer.stageSkill(ctx, staging, name, sourceDir, expectedHash, disableModelInvocation); err != nil {
+		return err
+	}
+	published, err := installer.publishStagedSkill(staging, destination, name)
+	if published {
+		cleanupStaging = false
+	}
+	return err
+}
+
+func (installer *installer) stageSkill(ctx context.Context, staging, name, sourceDir, expectedHash string, disableModelInvocation bool) error {
 	if err := copySkill(ctx, sourceDir, staging); err != nil {
 		return err
 	}
@@ -152,46 +163,44 @@ func (installer *installer) install(ctx context.Context, name, sourceDir, expect
 	if err := writeFileSynced(filepath.Join(staging, ownershipFile), markerBytes, 0o644); err != nil {
 		return fmt.Errorf("write ownership marker: %w", err)
 	}
-	if err := syncDirectory(staging); err != nil {
-		return err
-	}
+	return syncDirectory(staging)
+}
 
+func (installer *installer) publishStagedSkill(staging, destination, name string) (bool, error) {
 	if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
 		if err := os.Rename(staging, destination); err != nil {
-			return fmt.Errorf("publish skill %q: %w", name, err)
+			return false, fmt.Errorf("publish skill %q: %w", name, err)
 		}
-		cleanupStaging = false
-		return syncDirectory(installer.target)
+		return true, syncDirectory(installer.target)
 	}
 
 	backup := filepath.Join(installer.target, "."+name+".skillsrc-old-"+strconvTime())
 	journalPath := filepath.Join(installer.target, "."+name+".skillsrc-txn.json")
 	journal := transaction{Version: SchemaVersion, Action: "replace", Skill: name, Temp: filepath.Base(staging), Backup: filepath.Base(backup)}
 	if err := writeJSONAtomic(journalPath, journal); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(destination, backup); err != nil {
 		_ = os.Remove(journalPath)
-		return fmt.Errorf("move current skill %q aside: %w", name, err)
+		return false, fmt.Errorf("move current skill %q aside: %w", name, err)
 	}
 	if err := os.Rename(staging, destination); err != nil {
 		restoreErr := os.Rename(backup, destination)
 		if restoreErr == nil {
 			_ = os.Remove(journalPath)
 		}
-		return fmt.Errorf("publish replacement for %q: %w (restore: %v)", name, err, restoreErr)
+		return false, fmt.Errorf("publish replacement for %q: %w (restore: %v)", name, err, restoreErr)
 	}
-	cleanupStaging = false
 	if err := syncDirectory(installer.target); err != nil {
-		return err
+		return true, err
 	}
 	if err := os.RemoveAll(backup); err != nil {
-		return fmt.Errorf("remove backup for %q: %w", name, err)
+		return true, fmt.Errorf("remove backup for %q: %w", name, err)
 	}
 	if err := os.Remove(journalPath); err != nil {
-		return fmt.Errorf("remove transaction journal for %q: %w", name, err)
+		return true, fmt.Errorf("remove transaction journal for %q: %w", name, err)
 	}
-	return syncDirectory(installer.target)
+	return true, syncDirectory(installer.target)
 }
 
 func (installer *installer) prune(name string) error {
@@ -252,64 +261,91 @@ func (installer *installer) recoverTransactions() error {
 			continue
 		}
 		path := filepath.Join(installer.target, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read transaction journal %q: %w", path, err)
+		if err := installer.recoverTransaction(path, entry.Name()); err != nil {
+			return err
 		}
-		var journal transaction
-		if err := json.Unmarshal(data, &journal); err != nil || journal.Version != SchemaVersion || !skillNamePattern.MatchString(journal.Skill) || entry.Name() != "."+journal.Skill+".skillsrc-txn.json" {
-			return fmt.Errorf("invalid transaction journal %q", path)
-		}
-		if journal.Action == "replace" {
-			if !generatedForSkill(journal.Temp, journal.Skill, "tmp") || !generatedForSkill(journal.Backup, journal.Skill, "old") {
-				return fmt.Errorf("invalid transaction paths in %q", path)
-			}
-		} else if journal.Action == "prune" {
-			if journal.Temp != "" || !generatedForSkill(journal.Backup, journal.Skill, "prune") {
-				return fmt.Errorf("invalid transaction paths in %q", path)
-			}
-		} else {
-			return fmt.Errorf("invalid transaction action in %q", path)
-		}
-		destination := filepath.Join(installer.target, journal.Skill)
-		temporary := filepath.Join(installer.target, journal.Temp)
-		backup := filepath.Join(installer.target, journal.Backup)
-		_, destinationErr := os.Lstat(destination)
-		if journal.Action == "prune" {
-			if destinationErr == nil {
-				return fmt.Errorf("cannot recover prune for %q: destination reappeared", journal.Skill)
-			}
-			_ = os.RemoveAll(backup)
-			_ = os.Remove(path)
-			continue
-		}
-		if destinationErr == nil {
-			_ = os.RemoveAll(temporary)
-			_ = os.RemoveAll(backup)
-			_ = os.Remove(path)
-			continue
-		}
-		if _, err := os.Lstat(temporary); err == nil {
-			if err := os.Rename(temporary, destination); err != nil {
-				return fmt.Errorf("recover replacement for %q: %w", journal.Skill, err)
-			}
-			_ = os.RemoveAll(backup)
-			_ = os.Remove(path)
-			continue
-		}
-		if _, err := os.Lstat(backup); err == nil {
-			if err := os.Rename(backup, destination); err != nil {
-				return fmt.Errorf("restore backup for %q: %w", journal.Skill, err)
-			}
-			_ = os.Remove(path)
-			continue
-		}
-		return fmt.Errorf("cannot recover transaction for %q", journal.Skill)
 	}
+
 	entries, err = os.ReadDir(installer.target)
 	if err != nil {
 		return err
 	}
+	if err := installer.cleanOrphanedArtifacts(entries); err != nil {
+		return err
+	}
+	return syncDirectory(installer.target)
+}
+
+func (installer *installer) recoverTransaction(path, journalName string) error {
+	journal, err := readTransaction(path, journalName)
+	if err != nil {
+		return err
+	}
+	destination := filepath.Join(installer.target, journal.Skill)
+	backup := filepath.Join(installer.target, journal.Backup)
+	_, destinationErr := os.Lstat(destination)
+	if journal.Action == "prune" {
+		if destinationErr == nil {
+			return fmt.Errorf("cannot recover prune for %q: destination reappeared", journal.Skill)
+		}
+		_ = os.RemoveAll(backup)
+		_ = os.Remove(path)
+		return nil
+	}
+	temporary := filepath.Join(installer.target, journal.Temp)
+	return recoverReplaceTransaction(path, temporary, backup, destination, journal.Skill, destinationErr)
+}
+
+func readTransaction(path, journalName string) (transaction, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return transaction{}, fmt.Errorf("read transaction journal %q: %w", path, err)
+	}
+	var journal transaction
+	if err := json.Unmarshal(data, &journal); err != nil || journal.Version != SchemaVersion || !skillNamePattern.MatchString(journal.Skill) || journalName != "."+journal.Skill+".skillsrc-txn.json" {
+		return transaction{}, fmt.Errorf("invalid transaction journal %q", path)
+	}
+	switch journal.Action {
+	case "replace":
+		if !generatedForSkill(journal.Temp, journal.Skill, "tmp") || !generatedForSkill(journal.Backup, journal.Skill, "old") {
+			return transaction{}, fmt.Errorf("invalid transaction paths in %q", path)
+		}
+	case "prune":
+		if journal.Temp != "" || !generatedForSkill(journal.Backup, journal.Skill, "prune") {
+			return transaction{}, fmt.Errorf("invalid transaction paths in %q", path)
+		}
+	default:
+		return transaction{}, fmt.Errorf("invalid transaction action in %q", path)
+	}
+	return journal, nil
+}
+
+func recoverReplaceTransaction(path, temporary, backup, destination, skill string, destinationErr error) error {
+	if destinationErr == nil {
+		_ = os.RemoveAll(temporary)
+		_ = os.RemoveAll(backup)
+		_ = os.Remove(path)
+		return nil
+	}
+	if _, err := os.Lstat(temporary); err == nil {
+		if err := os.Rename(temporary, destination); err != nil {
+			return fmt.Errorf("recover replacement for %q: %w", skill, err)
+		}
+		_ = os.RemoveAll(backup)
+		_ = os.Remove(path)
+		return nil
+	}
+	if _, err := os.Lstat(backup); err == nil {
+		if err := os.Rename(backup, destination); err != nil {
+			return fmt.Errorf("restore backup for %q: %w", skill, err)
+		}
+		_ = os.Remove(path)
+		return nil
+	}
+	return fmt.Errorf("cannot recover transaction for %q", skill)
+}
+
+func (installer *installer) cleanOrphanedArtifacts(entries []os.DirEntry) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(installer.target, name)
@@ -329,7 +365,7 @@ func (installer *installer) recoverTransactions() error {
 			return fmt.Errorf("orphan install backup requires inspection: %q", path)
 		}
 	}
-	return syncDirectory(installer.target)
+	return nil
 }
 
 func generatedForSkill(name, skill, kind string) bool {
@@ -485,7 +521,7 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return err
 	}
@@ -497,7 +533,7 @@ func writeAtomicNew(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	// Linking publishes the fully synced file atomically and, unlike Rename,
 	// fails when another initializer has already created the destination.
 	if err := os.Link(temporaryPath, path); err != nil {
@@ -559,7 +595,7 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	return directory.Sync()
 }
 

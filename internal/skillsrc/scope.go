@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 )
 
 var Version = "dev"
@@ -199,7 +198,7 @@ func resolveFromWorkingDir(path, base string) string {
 
 func isWithin(path, parent string) bool {
 	relative, err := filepath.Rel(parent, path)
-	return err == nil && relative != "." && relative != ".." && !filepath.IsAbs(relative) && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return err == nil && relative != "." && filepath.IsLocal(relative)
 }
 
 func isUserAgentsDir(workingDir, homeDir string) bool {

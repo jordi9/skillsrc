@@ -101,6 +101,35 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 	if err != nil {
 		return nil, result, err
 	}
+	selected, err := selectAddedSkills(available, requested, all)
+	if err != nil {
+		return available, result, err
+	}
+	if err := addSkillsToManifest(&manifest, source, selected, userOnly); err != nil {
+		return available, result, err
+	}
+	if err := validateManifest(&manifest); err != nil {
+		return available, result, err
+	}
+	resolved, err := engine.resolve(ctx, manifest, oldLock, git, nil, false)
+	result.Fetches = git.Fetches()
+	if err != nil {
+		return available, result, err
+	}
+	newLock := lockFromResolved(resolved)
+	if err := writeManifest(engine.options.ManifestPath, manifest); err != nil {
+		cleanupResolvedSources(resolved)
+		return available, result, err
+	}
+	actions, err := engine.applyLocked(ctx, installer, manifest, oldLock, newLock, resolved)
+	result.Skills = actions
+	if err != nil {
+		return available, result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
+	}
+	return available, result, nil
+}
+
+func selectAddedSkills(available, requested []string, all bool) ([]string, error) {
 	selected := append([]string(nil), requested...)
 	if all {
 		selected = append([]string(nil), available...)
@@ -111,12 +140,16 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 	}
 	for _, name := range selected {
 		if _, ok := found[name]; !ok {
-			return available, result, &ValidationError{Problem: fmt.Sprintf("selected skill %q was not found", name)}
+			return nil, &ValidationError{Problem: fmt.Sprintf("selected skill %q was not found", name)}
 		}
 	}
-	index, err := manifestSourceIndex(manifest, source)
+	return selected, nil
+}
+
+func addSkillsToManifest(manifest *Manifest, source ManifestSource, selected []string, userOnly bool) error {
+	index, err := manifestSourceIndex(*manifest, source)
 	if err != nil {
-		return available, result, err
+		return err
 	}
 	already := make(map[string]int)
 	for sourceIndex, declared := range manifest.Sources {
@@ -139,7 +172,7 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 	}
 	for _, name := range selected {
 		if owner, exists := already[name]; exists && owner != index {
-			return available, result, &ValidationError{Problem: fmt.Sprintf("skill %q is already declared by another source", name)}
+			return &ValidationError{Problem: fmt.Sprintf("skill %q is already declared by another source", name)}
 		}
 		if _, exists := selectedSet[name]; !exists {
 			manifest.Sources[index].Skills = append(manifest.Sources[index].Skills, name)
@@ -149,29 +182,7 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 			manifest.Sources[index].DisableModelInvocation[name] = true
 		}
 	}
-	if err := validateManifest(&manifest); err != nil {
-		return available, result, err
-	}
-	resolved, err := engine.resolve(ctx, manifest, oldLock, git, nil, false)
-	result.Fetches = git.Fetches()
-	if err != nil {
-		return available, result, err
-	}
-	newLock := lockFromResolved(resolved)
-	if err := writeManifest(engine.options.ManifestPath, manifest); err != nil {
-		for _, entry := range resolved {
-			if entry.lock.Kind == SourceGit {
-				_ = os.RemoveAll(entry.root)
-			}
-		}
-		return available, result, err
-	}
-	actions, err := engine.applyLocked(ctx, installer, manifest, oldLock, newLock, resolved)
-	result.Skills = actions
-	if err != nil {
-		return available, result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
-	}
-	return available, result, nil
+	return nil
 }
 
 func (engine *Engine) Remove(ctx context.Context, names []string) (Result, error) {
@@ -190,6 +201,30 @@ func (engine *Engine) removeLocked(ctx context.Context, installer *installer, na
 	if err != nil {
 		return Result{}, err
 	}
+	if err := removeSkillsFromManifest(&manifest, names); err != nil {
+		return Result{}, err
+	}
+	filteredLock := lockForManifest(oldLock, manifest)
+	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
+	resolved, err := engine.resolve(ctx, manifest, filteredLock, git, nil, false)
+	result := Result{Fetches: git.Fetches()}
+	if err != nil {
+		return result, err
+	}
+	newLock := lockFromResolved(resolved)
+	if err := writeManifest(engine.options.ManifestPath, manifest); err != nil {
+		cleanupResolvedSources(resolved)
+		return result, err
+	}
+	actions, err := engine.applyLocked(ctx, installer, manifest, oldLock, newLock, resolved)
+	result.Skills = actions
+	if err != nil {
+		return result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
+	}
+	return result, nil
+}
+
+func removeSkillsFromManifest(manifest *Manifest, names []string) error {
 	wanted := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		wanted[name] = struct{}{}
@@ -202,7 +237,7 @@ func (engine *Engine) removeLocked(ctx context.Context, installer *installer, na
 	}
 	for _, name := range names {
 		if _, ok := declared[name]; !ok {
-			return Result{}, &ValidationError{Problem: fmt.Sprintf("skill %q is not declared", name)}
+			return &ValidationError{Problem: fmt.Sprintf("skill %q is not declared", name)}
 		}
 	}
 	keptSources := manifest.Sources[:0]
@@ -219,28 +254,7 @@ func (engine *Engine) removeLocked(ctx context.Context, installer *installer, na
 		}
 	}
 	manifest.Sources = keptSources
-	filteredLock := lockForManifest(oldLock, manifest)
-	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
-	resolved, err := engine.resolve(ctx, manifest, filteredLock, git, nil, false)
-	result := Result{Fetches: git.Fetches()}
-	if err != nil {
-		return result, err
-	}
-	newLock := lockFromResolved(resolved)
-	if err := writeManifest(engine.options.ManifestPath, manifest); err != nil {
-		for _, entry := range resolved {
-			if entry.lock.Kind == SourceGit {
-				_ = os.RemoveAll(entry.root)
-			}
-		}
-		return result, err
-	}
-	actions, err := engine.applyLocked(ctx, installer, manifest, oldLock, newLock, resolved)
-	result.Skills = actions
-	if err != nil {
-		return result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
-	}
-	return result, nil
+	return nil
 }
 
 func lockForManifest(lock Lock, manifest Manifest) Lock {
@@ -333,7 +347,7 @@ func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *
 		if err != nil {
 			return nil, err
 		}
-		defer os.RemoveAll(root)
+		defer func() { _ = os.RemoveAll(root) }()
 		if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
 			return nil, err
 		}
@@ -604,7 +618,7 @@ func (engine *Engine) resolve(ctx context.Context, manifest Manifest, oldLock Lo
 		entry, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, source.Skills)
 		if err != nil {
 			_ = os.RemoveAll(root)
-			return nil, fmt.Errorf("Git source %q at %s: %w", source.Repo, commit, err)
+			return nil, fmt.Errorf("git source %q at %s: %w", source.Repo, commit, err)
 		}
 		entry.root = root
 		resolved = append(resolved, entry)
@@ -613,10 +627,7 @@ func (engine *Engine) resolve(ctx context.Context, manifest Manifest, oldLock Lo
 }
 
 func resolveLocalSource(source ManifestSource) (resolvedSource, error) {
-	identityPath := source.Path
-	if !filepath.IsAbs(identityPath) && !strings.HasPrefix(identityPath, "~/") && identityPath != "~" {
-		identityPath = filepath.ToSlash(filepath.Clean(identityPath))
-	}
+	identityPath := localIdentityPath(source.Path)
 	entry := LockSource{Kind: SourceLocal, Identity: LocalIdentity(identityPath), Path: source.Path}
 	return resolveDiscoveredSource(source.ResolvedPath, entry, source.Skills)
 }
@@ -657,13 +668,8 @@ func resolveDiscoveredSource(root string, lockSource LockSource, selected []stri
 }
 
 func (engine *Engine) applyLocked(ctx context.Context, installer *installer, manifest Manifest, oldLock, newLock Lock, resolved []resolvedSource) ([]SkillAction, error) {
-	defer func() {
-		for _, source := range resolved {
-			if source.lock.Kind == SourceGit {
-				_ = os.RemoveAll(source.root)
-			}
-		}
-	}()
+	defer cleanupResolvedSources(resolved)
+
 	disabled := make(map[string]bool)
 	for _, source := range manifest.Sources {
 		for _, name := range source.Skills {
@@ -673,35 +679,71 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 	var actions []SkillAction
 	for _, source := range resolved {
 		for _, skill := range source.lock.Skills {
-			dir := source.root
-			if skill.Path != "." {
-				dir = filepath.Join(source.root, filepath.FromSlash(skill.Path))
+			action, err := engine.installResolvedSkill(ctx, installer, source.root, skill, oldLock, disabled[skill.Name])
+			if err != nil {
+				return actions, err
 			}
-			state := installedStatus(installer, engine.options.TargetDir, skill, disabled[skill.Name])
-			oldState := ""
-			if oldSkill, ok := lockSkill(oldLock, skill.Name); ok {
-				oldState = installedStatus(installer, engine.options.TargetDir, oldSkill, disabled[skill.Name])
-			}
-			if err := installer.install(ctx, skill.Name, dir, skill.Hash, disabled[skill.Name]); err != nil {
-				return actions, fmt.Errorf("install %q: %w", skill.Name, err)
-			}
-			action := "repaired"
-			if state == "missing" {
-				action = "installed"
-			} else if state == "current" {
-				action = "unchanged"
-			} else if oldState == "current" {
-				action = "updated"
-			}
-			actions = append(actions, SkillAction{Name: skill.Name, Action: action})
+			actions = append(actions, action)
 		}
 	}
+	pruned, err := engine.pruneRemovedSkills(installer, oldLock, newLock)
+	actions = append(actions, pruned...)
+	if err != nil {
+		return actions, err
+	}
+	if err := engine.persistAppliedLock(newLock); err != nil {
+		return actions, err
+	}
+	sort.Slice(actions, func(i, j int) bool {
+		if actions[i].Action != actions[j].Action {
+			return actions[i].Action < actions[j].Action
+		}
+		return actions[i].Name < actions[j].Name
+	})
+	return actions, nil
+}
+
+func cleanupResolvedSources(resolved []resolvedSource) {
+	for _, source := range resolved {
+		if source.lock.Kind == SourceGit {
+			_ = os.RemoveAll(source.root)
+		}
+	}
+}
+
+func (engine *Engine) installResolvedSkill(ctx context.Context, installer *installer, root string, skill LockedSkill, oldLock Lock, disabled bool) (SkillAction, error) {
+	dir := root
+	if skill.Path != "." {
+		dir = filepath.Join(root, filepath.FromSlash(skill.Path))
+	}
+	state := installedStatus(installer, engine.options.TargetDir, skill, disabled)
+	oldState := ""
+	if oldSkill, ok := lockSkill(oldLock, skill.Name); ok {
+		oldState = installedStatus(installer, engine.options.TargetDir, oldSkill, disabled)
+	}
+	if err := installer.install(ctx, skill.Name, dir, skill.Hash, disabled); err != nil {
+		return SkillAction{}, fmt.Errorf("install %q: %w", skill.Name, err)
+	}
+	action := "repaired"
+	if state == "missing" {
+		action = "installed"
+	} else if state == "current" {
+		action = "unchanged"
+	} else if oldState == "current" {
+		action = "updated"
+	}
+	return SkillAction{Name: skill.Name, Action: action}, nil
+}
+
+func (engine *Engine) pruneRemovedSkills(installer *installer, oldLock, newLock Lock) ([]SkillAction, error) {
 	desired := lockSkillNames(newLock)
 	var oldNames []string
 	for name := range lockSkillNames(oldLock) {
 		oldNames = append(oldNames, name)
 	}
 	sort.Strings(oldNames)
+
+	var actions []SkillAction
 	for _, name := range oldNames {
 		if _, keep := desired[name]; keep {
 			continue
@@ -714,28 +756,27 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 			actions = append(actions, SkillAction{Name: name, Action: "pruned"})
 		}
 	}
-	encoded, err := EncodeLock(newLock)
+	return actions, nil
+}
+
+func (engine *Engine) persistAppliedLock(lock Lock) error {
+	encoded, err := EncodeLock(lock)
 	if err != nil {
-		return actions, err
+		return err
 	}
 	if err := writeAtomic(engine.options.LockPath, encoded, 0o644); err != nil {
-		return actions, fmt.Errorf("write lockfile: %w", err)
+		return fmt.Errorf("write lockfile: %w", err)
 	}
-	if engine.options.ProjectRoot != "" {
-		if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
-			return actions, fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
-		}
-		if err := WriteManagedGitignore(engine.options.ProjectRoot, newLock); err != nil {
-			return actions, fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
-		}
+	if engine.options.ProjectRoot == "" {
+		return nil
 	}
-	sort.Slice(actions, func(i, j int) bool {
-		if actions[i].Action != actions[j].Action {
-			return actions[i].Action < actions[j].Action
-		}
-		return actions[i].Name < actions[j].Name
-	})
-	return actions, nil
+	if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
+		return fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
+	}
+	if err := WriteManagedGitignore(engine.options.ProjectRoot, lock); err != nil {
+		return fmt.Errorf("installation succeeded but project metadata needs doctor --repair: %w", err)
+	}
+	return nil
 }
 
 func matchingLockSource(lock Lock, source ManifestSource, identity string) *LockSource {
