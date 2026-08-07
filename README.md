@@ -39,8 +39,8 @@ skillsrc add owner/repository@skill-name
 
 `add` records the selected skill, updates the lockfile, and installs it under `.agents/skills`.
 
-If you do not know the skill name, omit `@skill-name` to list the skills found in the repository without changing the
-configuration:
+If you do not know the skill name, omit `@skill-name`. A repository containing exactly one skill installs it
+automatically; otherwise, `skillsrc` lists the available skills without changing the configuration:
 
 ```sh
 skillsrc add owner/repository
@@ -132,14 +132,15 @@ Skill discovery is limited to:
 - `.agents/skills/*`; and
 - `.claude/skills/*`.
 
-Duplicate discovered names are rejected. Safe relative file symlinks that resolve inside a selected skill are copied as
+When the same skill name appears in multiple discovery locations, the higher-priority location wins; duplicates at the
+same priority are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as
 regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
 
 ## Commands
 
 ```sh
 skillsrc init                                      # create skills.toml in the current directory
-skillsrc add SOURCE                               # discover a source's skills without changing the project
+skillsrc add SOURCE                               # install its sole skill, or list choices when there are multiple
 skillsrc add SOURCE SKILL...                      # declare selected skills, update the lock, and install them
 skillsrc add OWNER/REPO@SKILL                     # add one skill using the skills CLI shorthand
 skillsrc add SOURCE SKILL... --invoke-user-only   # add skills with automatic model invocation disabled
@@ -168,7 +169,7 @@ configuration, initialization directly in `$HOME`, and overwriting an existing m
 A source can be GitHub shorthand, an HTTPS or SSH Git URL, or a relative, absolute, or `~` local path:
 
 ```sh
-skillsrc add owner/repository              # discover the available skills
+skillsrc add owner/repository              # install its sole skill, or list multiple choices
 skillsrc add owner/repository one two      # add named skills
 skillsrc add owner/repository@one          # add one skill using shorthand
 skillsrc add owner/repository --all        # add every discovered skill
@@ -179,10 +180,11 @@ Use `--ref` with a Git source to select a branch, tag, or full commit hash. Use 
 or `--all` to write them with the `!` shorthand and install them with model invocation disabled. `--all` cannot be
 combined with explicit skill names.
 
-With no skill names, `add` only lists what the source contains. Added skills are validated before the manifest changes.
-`add` installs only newly selected skills: it does not refresh or repair existing declarations. When adding to an
-already locked Git source, it uses that source's locked commit. If the requested skill is absent there, run `skillsrc
-update <source>` first, then retry `add`.
+With no skill names, `add` installs the skill automatically when the source contains exactly one unique skill name. If
+there are zero or multiple skills, it only lists what the source contains. Added skills are validated before the
+manifest changes. `add` installs only newly selected skills: it does not refresh or repair existing declarations. When
+adding to an already locked Git source, it uses that source's locked commit. If the requested skill is absent there, run
+`skillsrc update <source>` first, then retry `add`.
 
 `remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by the
 selected manifest. It does not update the remaining Git sources. `rm` is an alias for `remove`.

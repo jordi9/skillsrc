@@ -109,6 +109,9 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		}
 		return available, result, err
 	}
+	if len(selected) == 0 {
+		return available, result, nil
+	}
 	declared := manifestSkillNames(manifest)
 	if err := addSkillsToManifest(&manifest, source, selected, userOnly); err != nil {
 		return available, result, err
@@ -170,7 +173,7 @@ func newlySelectedSkills(selected []string, declared map[string]struct{}) []stri
 
 func selectAddedSkills(available, requested []string, all bool) ([]string, error) {
 	selected := append([]string(nil), requested...)
-	if all {
+	if all || len(requested) == 0 && len(available) == 1 {
 		selected = append([]string(nil), available...)
 	}
 	found := make(map[string]struct{}, len(available))

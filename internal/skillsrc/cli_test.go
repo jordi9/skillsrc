@@ -260,6 +260,44 @@ func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
 	assert.Contains(t, string(installed), "disable-model-invocation: true")
 }
 
+func TestCLIAddSourceInstallsOnlyAvailableSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, "only"), "only", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), "✓ only · installed")
+	assert.NotContains(t, output.String(), "Available skills")
+	assert.FileExists(t, filepath.Join(options.TargetDir, "only", "SKILL.md"))
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	require.Len(t, manifest.Sources, 1)
+	assert.Equal(t, []string{"only"}, manifest.Sources[0].Skills)
+}
+
+func TestCLIAddSourceInstallsOnlyRemoteSkillWithOneFetch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remotePath, _ := makeGitRemote(t, map[string]string{
+		"only/SKILL.md": "---\nname: only\n---\nbody\n",
+	})
+	remote := "file://" + remotePath
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote}, options, &output, &errorOutput), errorOutput.String())
+	assert.Equal(t, 1, strings.Count(output.String(), "↓ "+remote+" · fetched\n"), output.String())
+	assert.Contains(t, output.String(), "✓ only · installed")
+	assert.FileExists(t, filepath.Join(options.TargetDir, "only", "SKILL.md"))
+}
+
 func TestCLIAddSourceListsAvailableSkillsWithoutChangingManifest(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -280,25 +318,23 @@ func TestCLIAddSourceListsAvailableSkillsWithoutChangingManifest(t *testing.T) {
 	assert.NoFileExists(t, options.LockPath)
 }
 
-func TestCLIAddSourceListsDuplicateSkillNameOnce(t *testing.T) {
+func TestCLIAddSourceInstallsSingleUniqueSkillFromDuplicateCandidates(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	local := filepath.Join(root, "source")
 	makeSkill(t, filepath.Join(local, ".agents", "skills", "impeccable"), "impeccable", "agent variant")
 	makeSkill(t, filepath.Join(local, ".claude", "skills", "impeccable"), "impeccable", "claude variant")
-	manifest := filepath.Join(root, "skills.toml")
-	original := []byte("version = 1\n")
-	require.NoError(t, os.WriteFile(manifest, original, 0o644))
-	options := testOptions(root, manifest)
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
 	var output, errorOutput bytes.Buffer
 
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
-	assert.Contains(t, output.String(), "Available skills from "+displaySource(local, filepath.Dir(root))+":\n  • impeccable\n")
-	assert.Equal(t, 1, strings.Count(output.String(), "  • impeccable\n"))
-	actual, err := os.ReadFile(manifest)
+	assert.Contains(t, output.String(), "✓ impeccable · installed")
+	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "impeccable", "SKILL.md"))
 	require.NoError(t, err)
-	assert.Equal(t, original, actual)
-	assert.NoFileExists(t, options.LockPath)
+	assert.Contains(t, string(installed), "agent variant")
+	assert.NotContains(t, string(installed), "claude variant")
 }
 
 func TestCLIAddResolvesDuplicateNameToAgentsSkill(t *testing.T) {
@@ -731,7 +767,7 @@ func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) 
 	var output, errorOutput bytes.Buffer
 	runtime.Out, runtime.Err = &output, &errorOutput
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"help", "add"}, runtime))
-	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add.\n")
+	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.\n")
 	for _, option := range []string{"--all", "--ref", "--invoke-user-only"} {
 		assert.Contains(t, output.String(), "  "+option)
 	}

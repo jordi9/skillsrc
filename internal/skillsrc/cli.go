@@ -470,11 +470,11 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 	if err != nil {
 		return err
 	}
-	if len(parsed.skills) == 0 && !parsed.all {
-		names, result, err := engine.Discover(ctx, source)
-		if err != nil {
-			return err
-		}
+	names, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
+	if err != nil {
+		return err
+	}
+	if len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
 		printFetches(output, result.Fetches, home)
 		if len(result.Fetches) > 0 {
 			fmt.Fprintln(output)
@@ -484,10 +484,6 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 			fmt.Fprintf(output, "  • %s\n", name)
 		}
 		return nil
-	}
-	_, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
-	if err != nil {
-		return err
 	}
 	printResult(output, "Add complete", result, home, false)
 	return nil
@@ -865,7 +861,7 @@ const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
 var cliCommandSpecs = []cliCommandSpec{
 	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
-	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
+	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
 	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
 	{"outdated", "Show Git updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
