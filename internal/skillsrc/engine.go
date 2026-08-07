@@ -2,6 +2,7 @@ package skillsrc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,37 +97,75 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		return nil, Result{}, err
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
-	available, err := engine.discover(ctx, source, git)
+	available, lockedCommit, lockedSource, err := engine.discoverForAdd(ctx, source, manifest, oldLock, git)
 	result := Result{Fetches: git.Fetches()}
 	if err != nil {
 		return nil, result, err
 	}
 	selected, err := selectAddedSkills(available, requested, all)
 	if err != nil {
+		if lockedCommit != "" {
+			return available, result, fmt.Errorf("requested skill is not available at locked revision %.12s; run 'skillsrc update %s' before adding it: %w", lockedCommit, lockedSource, err)
+		}
 		return available, result, err
 	}
+	declared := manifestSkillNames(manifest)
 	if err := addSkillsToManifest(&manifest, source, selected, userOnly); err != nil {
 		return available, result, err
 	}
 	if err := validateManifest(&manifest); err != nil {
 		return available, result, err
 	}
-	resolved, err := engine.resolve(ctx, manifest, oldLock, git, nil, false)
+	added := newlySelectedSkills(selected, declared)
+	if len(added) == 0 {
+		return available, result, nil
+	}
+	sourceIndex, err := manifestSourceIndex(manifest, source)
+	if err != nil {
+		return available, result, err
+	}
+	resolved, previous, err := engine.resolveAddedSource(ctx, manifest.Sources[sourceIndex], added, oldLock, git)
 	result.Fetches = git.Fetches()
 	if err != nil {
 		return available, result, err
 	}
-	newLock := lockFromResolved(resolved)
+	defer cleanupResolvedSources([]resolvedSource{resolved})
+	newLock := mergeAddedLock(oldLock, resolved.lock, previous)
 	if err := writeManifest(engine.options.ManifestPath, manifest); err != nil {
-		cleanupResolvedSources(resolved)
 		return available, result, err
 	}
-	actions, err := engine.applyLocked(ctx, installer, manifest, oldLock, newLock, resolved)
+	actions, err := engine.applyAddedLocked(ctx, installer, manifest, oldLock, newLock, resolved)
 	result.Skills = actions
 	if err != nil {
 		return available, result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
 	}
 	return available, result, nil
+}
+
+func manifestSkillNames(manifest Manifest) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, source := range manifest.Sources {
+		for _, name := range source.Skills {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func newlySelectedSkills(selected []string, declared map[string]struct{}) []string {
+	seen := make(map[string]struct{}, len(selected))
+	var added []string
+	for _, name := range selected {
+		if _, exists := declared[name]; exists {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		added = append(added, name)
+	}
+	return added
 }
 
 func selectAddedSkills(available, requested []string, all bool) ([]string, error) {
@@ -177,9 +216,9 @@ func addSkillsToManifest(manifest *Manifest, source ManifestSource, selected []s
 		if _, exists := selectedSet[name]; !exists {
 			manifest.Sources[index].Skills = append(manifest.Sources[index].Skills, name)
 			selectedSet[name] = struct{}{}
-		}
-		if userOnly {
-			manifest.Sources[index].DisableModelInvocation[name] = true
+			if userOnly {
+				manifest.Sources[index].DisableModelInvocation[name] = true
+			}
 		}
 	}
 	return nil
@@ -328,6 +367,46 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 		}
 	}
 	return -1, nil
+}
+
+func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) ([]string, string, string, error) {
+	index, err := manifestSourceIndex(manifest, source)
+	if err != nil || index < 0 || source.Repo == "" {
+		available, discoverErr := engine.discover(ctx, source, git)
+		return available, "", "", discoverErr
+	}
+	existing := manifest.Sources[index]
+	repository, err := NormalizeRepository(existing.Repo)
+	if err != nil {
+		return nil, "", "", err
+	}
+	previous := matchingLockSource(lock, existing, repository.Identity)
+	if previous == nil {
+		available, discoverErr := engine.discover(ctx, source, git)
+		return available, "", "", discoverErr
+	}
+	commit, err := git.Resolve(ctx, existing.Repo, existing.Ref, false, previous.Commit)
+	if err != nil {
+		return nil, previous.Commit, existing.Repo, err
+	}
+	root, err := os.MkdirTemp("", "skillsrc-git-")
+	if err != nil {
+		return nil, commit, existing.Repo, err
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+	if err := git.Materialize(ctx, existing.Repo, commit, root); err != nil {
+		return nil, commit, existing.Repo, err
+	}
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		return nil, commit, existing.Repo, err
+	}
+	available := make([]string, 0, len(found))
+	for name := range found {
+		available = append(available, name)
+	}
+	sort.Strings(available)
+	return available, commit, existing.Repo, nil
 }
 
 func (engine *Engine) Discover(ctx context.Context, source ManifestSource) ([]string, Result, error) {
@@ -665,6 +744,112 @@ func resolveDiscoveredSource(root string, lockSource LockSource, selected []stri
 		})
 	}
 	return resolvedSource{lock: lockSource, root: root}, nil
+}
+
+func (engine *Engine) resolveAddedSource(ctx context.Context, source ManifestSource, added []string, oldLock Lock, git *GitOperation) (resolvedSource, int, error) {
+	if source.Path != "" {
+		lockSource := LockSource{Kind: SourceLocal, Identity: LocalIdentity(localIdentityPath(source.Path)), Path: source.Path}
+		previous := matchingLockSourceForAddition(oldLock, source, lockSource.Kind, lockSource.Identity)
+		resolved, err := resolveDiscoveredSource(source.ResolvedPath, lockSource, added)
+		return resolved, previous, err
+	}
+
+	repository, err := NormalizeRepository(source.Repo)
+	if err != nil {
+		return resolvedSource{}, -1, err
+	}
+	previous := matchingLockSourceForAddition(oldLock, source, SourceGit, repository.Identity)
+	lockedCommit := ""
+	if previous >= 0 {
+		lockedCommit = oldLock.Sources[previous].Commit
+	}
+	commit, err := git.Resolve(ctx, source.Repo, source.Ref, previous < 0, lockedCommit)
+	if err != nil {
+		return resolvedSource{}, previous, err
+	}
+	root, err := os.MkdirTemp("", "skillsrc-git-")
+	if err != nil {
+		return resolvedSource{}, previous, err
+	}
+	if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
+		_ = os.RemoveAll(root)
+		return resolvedSource{}, previous, err
+	}
+	resolved, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, added)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		var validation *ValidationError
+		if previous >= 0 && errors.As(err, &validation) && strings.Contains(validation.Problem, "was not found") {
+			return resolvedSource{}, previous, fmt.Errorf("requested skill is not available at locked revision %.12s; run 'skillsrc update %s' before adding it: %w", commit, source.Repo, err)
+		}
+		return resolvedSource{}, previous, err
+	}
+	resolved.root = root
+	return resolved, previous, nil
+}
+
+func matchingLockSourceForAddition(lock Lock, source ManifestSource, kind SourceKind, identity string) int {
+	selected := make(map[string]struct{}, len(source.Skills))
+	for _, name := range source.Skills {
+		selected[name] = struct{}{}
+	}
+	best, bestSkills := -1, -1
+	for index, candidate := range lock.Sources {
+		if candidate.Kind != kind || candidate.Identity != identity {
+			continue
+		}
+		if kind == SourceGit && (candidate.Repo != source.Repo || candidate.Ref != source.Ref) {
+			continue
+		}
+		if kind == SourceLocal && candidate.Path != source.Path {
+			continue
+		}
+		contained := true
+		for _, skill := range candidate.Skills {
+			if _, ok := selected[skill.Name]; !ok {
+				contained = false
+				break
+			}
+		}
+		if contained && len(candidate.Skills) > bestSkills {
+			best, bestSkills = index, len(candidate.Skills)
+		}
+	}
+	return best
+}
+
+func mergeAddedLock(oldLock Lock, added LockSource, previous int) Lock {
+	merged := Lock{Version: SchemaVersion, Sources: append([]LockSource(nil), oldLock.Sources...)}
+	if previous < 0 {
+		merged.Sources = append(merged.Sources, added)
+		return merged
+	}
+	current := merged.Sources[previous]
+	current.Skills = append(append([]LockedSkill(nil), current.Skills...), added.Skills...)
+	merged.Sources[previous] = current
+	return merged
+}
+
+func (engine *Engine) applyAddedLocked(ctx context.Context, installer *installer, manifest Manifest, oldLock, newLock Lock, resolved resolvedSource) ([]SkillAction, error) {
+	disabled := make(map[string]bool)
+	for _, source := range manifest.Sources {
+		for _, name := range source.Skills {
+			disabled[name] = source.DisableModelInvocation[name]
+		}
+	}
+	var actions []SkillAction
+	for _, skill := range resolved.lock.Skills {
+		action, err := engine.installResolvedSkill(ctx, installer, resolved.root, skill, oldLock, disabled[skill.Name])
+		if err != nil {
+			return actions, err
+		}
+		actions = append(actions, action)
+	}
+	if err := engine.persistAppliedLock(newLock); err != nil {
+		return actions, err
+	}
+	sort.Slice(actions, func(i, j int) bool { return actions[i].Name < actions[j].Name })
+	return actions, nil
 }
 
 func (engine *Engine) applyLocked(ctx context.Context, installer *installer, manifest Manifest, oldLock, newLock Lock, resolved []resolvedSource) ([]SkillAction, error) {

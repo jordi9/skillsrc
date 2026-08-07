@@ -180,6 +180,9 @@ or `--all` to write them with the `!` shorthand and install them with model invo
 combined with explicit skill names.
 
 With no skill names, `add` only lists what the source contains. Added skills are validated before the manifest changes.
+`add` installs only newly selected skills: it does not refresh or repair existing declarations. When adding to an
+already locked Git source, it uses that source's locked commit. If the requested skill is absent there, run `skillsrc
+update <source>` first, then retry `add`.
 
 `remove` deletes the named declarations, removes empty source blocks, and prunes only installations owned by the
 selected manifest. It does not update the remaining Git sources. `rm` is an alias for `remove`.

@@ -355,6 +355,117 @@ func TestCLIAddAllFetchesRepositoryOnce(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(options.TargetDir, "two"))
 }
 
+func TestCLIAddInstallsOnlyNewLocalSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, "one"), "one", "first")
+	makeSkill(t, filepath.Join(local, "two"), "two", "second")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput), errorOutput.String())
+	before, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	beforeOne, ok := lockSkill(before, "one")
+	require.True(t, ok)
+	makeSkill(t, filepath.Join(local, "one"), "one", "changed upstream")
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "two"}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), "✓ two · installed")
+	assert.NotContains(t, output.String(), "one ·")
+	after, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	afterOne, ok := lockSkill(after, "one")
+	require.True(t, ok)
+	assert.Equal(t, beforeOne, afterOne)
+	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(installed), "first")
+	assert.NotContains(t, string(installed), "changed upstream")
+	assert.FileExists(t, filepath.Join(options.TargetDir, "two", "SKILL.md"))
+}
+
+func TestCLIAddUsesExistingGitRevisionWithoutUpdatingSibling(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remotePath, firstCommit := makeGitRemote(t, map[string]string{
+		"one/SKILL.md": "---\nname: one\n---\nfirst one\n",
+		"two/SKILL.md": "---\nname: two\n---\nfirst two\n",
+	})
+	remote := "file://" + remotePath
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "one"}, options, &output, &errorOutput), errorOutput.String())
+	pushGitChange(t, remotePath, "one/SKILL.md", "---\nname: one\n---\nchanged one\n")
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "two"}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), "✓ two · installed")
+	assert.NotContains(t, output.String(), "one ·")
+	assert.NotContains(t, output.String(), "fetched")
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	require.Len(t, lock.Sources, 1)
+	assert.Equal(t, firstCommit, lock.Sources[0].Commit)
+	installedOne, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(installedOne), "first one")
+	installedTwo, err := os.ReadFile(filepath.Join(options.TargetDir, "two", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(installedTwo), "first two")
+}
+
+func TestCLIAddRequiresUpdateWhenSkillIsAbsentFromLockedRevision(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remotePath, firstCommit := makeGitRemote(t, map[string]string{
+		"one/SKILL.md": "---\nname: one\n---\nfirst one\n",
+	})
+	remote := "file://" + remotePath
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "one"}, options, &output, &errorOutput), errorOutput.String())
+	secondCommit := pushGitChange(t, remotePath, "two/SKILL.md", "---\nname: two\n---\nsecond two\n")
+	remoteAlias := remote + "/"
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", remoteAlias, "two"}, options, &output, &errorOutput))
+	assert.Contains(t, errorOutput.String(), "not available at locked revision")
+	assert.Contains(t, errorOutput.String(), "skillsrc update "+remote)
+	assert.NotContains(t, errorOutput.String(), "skillsrc update "+remoteAlias)
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"one"}, manifest.Sources[0].Skills)
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	assert.Equal(t, firstCommit, lock.Sources[0].Commit)
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "two"))
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"update", remote}, options, &output, &errorOutput), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", remote, "two"}, options, &output, &errorOutput), errorOutput.String())
+	lock, err = LoadLock(options.LockPath)
+	require.NoError(t, err)
+	assert.Equal(t, secondCommit, lock.Sources[0].Commit)
+	assert.FileExists(t, filepath.Join(options.TargetDir, "two", "SKILL.md"))
+}
+
 func TestConcurrentAddsPreserveBothDeclarations(t *testing.T) {
 	root := t.TempDir()
 	local := filepath.Join(root, "source")
