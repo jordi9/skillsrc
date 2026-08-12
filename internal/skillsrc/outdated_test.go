@@ -187,7 +187,28 @@ func TestOutdatedTreatsInconsistentLocalInvocationMetadataAsChanged(t *testing.T
 	assert.Equal(t, []LocalOutdatedSource{{Source: "./local", ChangedSkills: []string{"one"}}}, result.LocalSources)
 }
 
-func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
+func TestCLIOutdatedIgnoresRepositoryChangesOutsideSelectedSkills(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remote, _ := makeGitRemote(t, map[string]string{
+		"one/SKILL.md": "---\nname: one\n---\nfirst\n",
+		"README.md":    "first\n",
+	})
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version=1\n[[sources]]\nrepo=\""+remote+"\"\nref=\"main\"\nskills=[\"one\"]\n")
+	options := testOptions(root, manifestPath)
+	_, err := NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+
+	pushGitChange(t, remote, "README.md", "second\n")
+	var output, errorOutput bytes.Buffer
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options, &output, &errorOutput), errorOutput.String())
+	displayedSource := displaySource(remote, filepath.Dir(root))
+	assert.Contains(t, output.String(), "✓ "+displayedSource+" · up to date")
+	assert.NotContains(t, output.String(), "update available")
+}
+
+func TestCLIOutdatedShowsOnlyChangedSelectedSkills(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	remote, firstCommit := makeGitRemote(t, map[string]string{
@@ -200,18 +221,13 @@ func TestCLIOutdatedShowsAvailableUpdate(t *testing.T) {
 	_, err := NewEngine(options).Sync(context.Background())
 	require.NoError(t, err)
 
+	secondCommit := pushGitChange(t, remote, "one/SKILL.md", "---\nname: one\n---\nsecond\n")
 	var output, errorOutput bytes.Buffer
 	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options, &output, &errorOutput), errorOutput.String())
 	displayedSource := displaySource(remote, filepath.Dir(root))
-	assert.Contains(t, output.String(), "✓ "+displayedSource+" · up to date")
-	assert.NotContains(t, output.String(), " · fetched")
-
-	output.Reset()
-	errorOutput.Reset()
-	secondCommit := pushGitChange(t, remote, "one/SKILL.md", "---\nname: one\n---\nsecond\n")
-	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"outdated"}, options, &output, &errorOutput), errorOutput.String())
-	pattern := `↑ ` + regexp.QuoteMeta(displayedSource) + ` · one, two · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
+	pattern := `↑ ` + regexp.QuoteMeta(displayedSource) + ` · one · update available · \d{4}-\d{2}-\d{2} \(` + firstCommit[:12] + `\) → \d{4}-\d{2}-\d{2} \(` + secondCommit[:12] + `\)`
 	assert.Regexp(t, pattern, output.String())
+	assert.NotContains(t, output.String(), "one, two")
 	assert.NotContains(t, output.String(), " · fetched")
 	assert.Contains(t, output.String(), "└─ Summary · 1 update available")
 }

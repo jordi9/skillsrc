@@ -355,7 +355,7 @@ func printOutdated(output io.Writer, result OutdatedResult, home string) {
 	localChanges := 0
 	for _, source := range result.Sources {
 		name := displaySource(source.Source, home)
-		if source.Old.Commit == source.New.Commit {
+		if len(source.Skills) == 0 {
 			fmt.Fprintf(output, "✓ %s · up to date\n", name)
 			continue
 		}
@@ -863,7 +863,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
 	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
 	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
-	{"outdated", "Show Git updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
+	{"outdated", "Show remote skill updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
 	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--all   Include standalone unmanaged skills.\n--json  Print JSON.", []string{"ls"}},
 	{"doctor", "Diagnose or repair lock, install, cache, and project metadata", "skillsrc [OPTIONS] doctor [OPTIONS]", "None.", "--repair  Repair issues by running sync.\n--json    Print JSON.", nil},

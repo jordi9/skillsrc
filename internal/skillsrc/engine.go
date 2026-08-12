@@ -516,42 +516,91 @@ func (engine *Engine) Outdated(ctx context.Context, selectors []string) (Outdate
 			})
 			continue
 		}
-		repository, err := NormalizeRepository(source.Repo)
+		outdated, err := engine.outdatedGitSource(ctx, git, oldLock, source)
 		if err != nil {
 			return OutdatedResult{Fetches: git.Fetches()}, err
 		}
-		previous := matchingLockSource(oldLock, source, repository.Identity)
-		lockedCommit := ""
-		if previous != nil {
-			lockedCommit = previous.Commit
-		}
-		currentCommit, err := git.Resolve(ctx, source.Repo, source.Ref, true, lockedCommit)
-		if err != nil {
-			return OutdatedResult{Fetches: git.Fetches()}, err
-		}
-		var oldRevision GitRevision
-		if lockedCommit != "" {
-			oldRevision, err = git.Revision(ctx, source.Repo, lockedCommit)
-			if err != nil {
-				return OutdatedResult{Fetches: git.Fetches()}, err
-			}
-		}
-		newRevision, err := git.Revision(ctx, source.Repo, currentCommit)
-		if err != nil {
-			return OutdatedResult{Fetches: git.Fetches()}, err
-		}
-		sources = append(sources, OutdatedSource{
-			Source: source.Repo,
-			Skills: append([]string(nil), source.Skills...),
-			Old:    oldRevision,
-			New:    newRevision,
-		})
+		sources = append(sources, outdated)
 	}
 	return OutdatedResult{
 		Sources:      sources,
 		LocalSources: localSources,
 		Fetches:      git.Fetches(),
 	}, nil
+}
+
+func (engine *Engine) outdatedGitSource(ctx context.Context, git *GitOperation, oldLock Lock, source ManifestSource) (OutdatedSource, error) {
+	repository, err := NormalizeRepository(source.Repo)
+	if err != nil {
+		return OutdatedSource{}, err
+	}
+	previous := matchingLockSource(oldLock, source, repository.Identity)
+	lockedCommit := ""
+	if previous != nil {
+		lockedCommit = previous.Commit
+	}
+	currentCommit, err := git.Resolve(ctx, source.Repo, source.Ref, true, lockedCommit)
+	if err != nil {
+		return OutdatedSource{}, err
+	}
+	var oldRevision GitRevision
+	if lockedCommit != "" {
+		oldRevision, err = git.Revision(ctx, source.Repo, lockedCommit)
+		if err != nil {
+			return OutdatedSource{}, err
+		}
+	}
+	newRevision, err := git.Revision(ctx, source.Repo, currentCommit)
+	if err != nil {
+		return OutdatedSource{}, err
+	}
+	var changedSkills []string
+	if lockedCommit != currentCommit {
+		changedSkills, err = engine.changedGitSkills(ctx, git, source, repository.Identity, currentCommit, previous)
+		if err != nil {
+			return OutdatedSource{}, err
+		}
+	}
+	return OutdatedSource{Source: source.Repo, Skills: changedSkills, Old: oldRevision, New: newRevision}, nil
+}
+
+func (engine *Engine) changedGitSkills(ctx context.Context, git *GitOperation, source ManifestSource, identity, commit string, previous *LockSource) ([]string, error) {
+	root, err := os.MkdirTemp("", "skillsrc-git-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+	if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
+		return nil, err
+	}
+	current, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, source.Skills)
+	if err != nil {
+		return nil, fmt.Errorf("git source %q at %s: %w", source.Repo, commit, err)
+	}
+	return changedSkillHashes(previous, current.lock), nil
+}
+
+func changedSkillHashes(previous *LockSource, current LockSource) []string {
+	if previous == nil {
+		changed := make([]string, 0, len(current.Skills))
+		for _, skill := range current.Skills {
+			changed = append(changed, skill.Name)
+		}
+		sort.Strings(changed)
+		return changed
+	}
+	lockedHashes := make(map[string]string, len(previous.Skills))
+	for _, skill := range previous.Skills {
+		lockedHashes[skill.Name] = skill.Hash
+	}
+	var changed []string
+	for _, skill := range current.Skills {
+		if lockedHashes[skill.Name] != skill.Hash {
+			changed = append(changed, skill.Name)
+		}
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 func changedLocalSkills(lock Lock, manifestSource ManifestSource, current LockSource) []string {

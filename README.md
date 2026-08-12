@@ -149,7 +149,7 @@ skillsrc add SOURCE --all --invoke-user-only      # add every discovered skill w
 skillsrc add SOURCE SKILL... --ref REF            # add from a branch, tag, or full 40-character commit hash
 skillsrc remove SKILL...                          # remove declarations and their owned installations, then sync
 skillsrc sync                                     # restore the declared set at locked Git revisions and local content
-skillsrc outdated [SOURCE|SKILL...]               # report remote updates or changed local sources without modifying files
+skillsrc outdated [SOURCE|SKILL...]               # report changed remote skills or local sources without modifying files
 skillsrc update [SOURCE|SKILL...]                 # advance matching Git sources, update the lock, and sync installations
 skillsrc list [--all] [--json]                    # show configured state, optionally including unmanaged skills or JSON
 skillsrc doctor [--repair] [--json]               # diagnose managed state, optionally repair it or emit JSON
@@ -195,17 +195,18 @@ These commands intentionally have different effects:
 
 | Command | Changes locks? | Changes installations? | Purpose |
 | --- | --- | --- | --- |
-| `outdated` | No | No | Check Git updates and unsynchronized local changes |
+| `outdated` | No | No | Check remote skill updates and unsynchronized local changes |
 | `sync` | Only creates missing entries | Yes | Reproduce the declared and locked skill set |
 | `update` | Yes, for selected Git sources | Yes | Advance Git revisions and then synchronize |
 
 `sync` reproduces locked Git commits, creates missing lock entries, refreshes local content, installs the declared set,
 and prunes no-longer-declared managed skills. It does not advance an existing Git lock.
 
-`outdated` fetches configured Git refs and reports each Git source as up to date or update available without changing
-the manifest, lockfile, project metadata, or installed skills. Available Git updates show exact tags when present,
-otherwise commit dates, alongside short commit hashes. Local sources are resolved read-only and reported as matching the
-lock or having unsynchronized content changes.
+`outdated` fetches configured Git refs and compares each selected skill's content hash with its locked hash. A Git
+source is reported as up to date when its selected skills are unchanged, even if other repository files changed.
+Available skill updates show the changed skill names and exact tags when present, otherwise commit dates, alongside
+short commit hashes. The command does not change the manifest, lockfile, project metadata, or installed skills. Local
+sources are resolved read-only and reported as matching the lock or having unsynchronized content changes.
 
 `update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, and then
 performs a sync. `outdated` accepts the same optional selectors. Local sources have no remote version; full commit refs
