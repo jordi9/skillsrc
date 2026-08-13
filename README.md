@@ -130,7 +130,11 @@ Skill discovery is limited to:
 - immediate child directories;
 - `skills/*`, plus one category level for grouped repositories;
 - `.agents/skills/*`; and
-- `.claude/skills/*`.
+- `.claude/skills/*`; and
+- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including each declared plugin's conventional `skills/*` directory.
+
+Claude plugin manifest paths must use safe local `./...` paths. Remote plugin sources and absolute, bare, or escaping
+paths are ignored.
 
 When the same skill name appears in multiple discovery locations, the higher-priority location wins; duplicates at the
 same priority are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as

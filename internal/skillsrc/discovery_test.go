@@ -36,6 +36,79 @@ func TestDiscoverSkillsUsesOnlyConventionalLocations(t *testing.T) {
 	}
 }
 
+func TestDiscoverSkillsUsesClaudeMarketplacePluginLocations(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".claude-plugin", "marketplace.json"), `{
+		"metadata": {"pluginRoot": "./plugins"},
+		"plugins": [
+			{"name": "one", "source": "./one"},
+			{"name": "two", "source": "./two", "skills": ["./custom/explicit"]}
+		]
+	}`)
+	makeSkill(t, filepath.Join(root, "plugins", "one", "skills", "conventional"), "conventional", "one")
+	makeSkill(t, filepath.Join(root, "plugins", "two", "custom", "explicit"), "explicit", "two")
+	makeSkill(t, filepath.Join(root, "plugins", "unlisted", "skills", "ignored"), "ignored", "no")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, wantPath := range map[string]string{
+		"conventional": "plugins/one/skills/conventional",
+		"explicit":     "plugins/two/custom/explicit",
+	} {
+		if got := found[name].Path; got != wantPath {
+			t.Errorf("skill %q path = %q, want %q", name, got, wantPath)
+		}
+	}
+	if _, ok := found["ignored"]; ok {
+		t.Fatalf("skill from undeclared plugin was discovered: %#v", found)
+	}
+}
+
+func TestDiscoverSkillsUsesRootClaudePluginManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".claude-plugin", "plugin.json"), `{
+		"name": "root-plugin",
+		"skills": ["./custom/root-skill"]
+	}`)
+	makeSkill(t, filepath.Join(root, "custom", "root-skill"), "root-skill", "one")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["root-skill"].Path; got != "custom/root-skill" {
+		t.Fatalf("root plugin skill path = %q, want custom/root-skill", got)
+	}
+}
+
+func TestDiscoverSkillsIgnoresUnsafeClaudePluginPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := t.TempDir()
+	makeSkill(t, filepath.Join(outside, "escaped"), "escaped", "no")
+	writeTestFile(t, filepath.Join(root, ".claude-plugin", "marketplace.json"), fmt.Sprintf(`{
+		"plugins": [
+			{"source": %q},
+			{"source": "plugin", "skills": ["./skills/bare-source"]},
+			{"source": "./safe", "skills": ["../escaped"]}
+		]
+	}`, "./"+filepath.ToSlash(filepath.Join("..", filepath.Base(outside)))))
+	makeSkill(t, filepath.Join(root, "plugin", "skills", "bare-source"), "bare-source", "no")
+	makeSkill(t, filepath.Join(root, "safe", "escaped"), "unsafe-skill-path", "no")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("unsafe manifest paths were discovered: %#v", found)
+	}
+}
+
 func TestDiscoverSkillsUsesConventionalLocationPrecedenceForDuplicateNames(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

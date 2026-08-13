@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
@@ -110,7 +111,143 @@ func collectSkillCandidatePaths(root string) ([]skillCandidatePath, error) {
 			}
 		}
 	}
+	pluginCandidates, err := collectClaudePluginSkillPaths(root, 5)
+	if err != nil {
+		return nil, err
+	}
+	return appendUniqueCandidatePaths(candidates, pluginCandidates...), nil
+}
+
+func appendUniqueCandidatePaths(candidates []skillCandidatePath, additions ...skillCandidatePath) []skillCandidatePath {
+	seen := make(map[string]struct{}, len(candidates)+len(additions))
+	for _, candidate := range candidates {
+		seen[filepath.Clean(candidate.path)] = struct{}{}
+	}
+	for _, candidate := range additions {
+		clean := filepath.Clean(candidate.path)
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+const claudePluginManifestDir = ".claude-plugin"
+
+type claudeMarketplaceManifest struct {
+	Metadata struct {
+		PluginRoot string `json:"pluginRoot"`
+	} `json:"metadata"`
+	Plugins []claudeMarketplacePlugin `json:"plugins"`
+}
+
+type claudeMarketplacePlugin struct {
+	Source json.RawMessage `json:"source"`
+	Skills []string        `json:"skills"`
+}
+
+type claudePluginManifest struct {
+	Skills []string `json:"skills"`
+}
+
+func collectClaudePluginSkillPaths(root string, priority int) ([]skillCandidatePath, error) {
+	var candidates []skillCandidatePath
+	var marketplace claudeMarketplaceManifest
+	if readJSONFile(filepath.Join(root, claudePluginManifestDir, "marketplace.json"), &marketplace) {
+		pluginRoot := root
+		if marketplace.Metadata.PluginRoot != "" {
+			var ok bool
+			pluginRoot, ok = safeManifestPath(root, root, marketplace.Metadata.PluginRoot)
+			if !ok {
+				pluginRoot = ""
+			}
+		}
+		if pluginRoot != "" {
+			for _, plugin := range marketplace.Plugins {
+				pluginBase := pluginRoot
+				if len(plugin.Source) != 0 {
+					var source string
+					if json.Unmarshal(plugin.Source, &source) != nil {
+						continue
+					}
+					var ok bool
+					pluginBase, ok = safeManifestPath(root, pluginRoot, source)
+					if !ok {
+						continue
+					}
+				}
+				paths, err := collectManifestPluginSkills(root, pluginBase, plugin.Skills, priority)
+				if err != nil {
+					return nil, err
+				}
+				candidates = appendUniqueCandidatePaths(candidates, paths...)
+			}
+		}
+	}
+
+	var plugin claudePluginManifest
+	if readJSONFile(filepath.Join(root, claudePluginManifestDir, "plugin.json"), &plugin) {
+		paths, err := collectManifestPluginSkills(root, root, plugin.Skills, priority)
+		if err != nil {
+			return nil, err
+		}
+		candidates = appendUniqueCandidatePaths(candidates, paths...)
+	}
 	return candidates, nil
+}
+
+func collectManifestPluginSkills(root, pluginBase string, declared []string, priority int) ([]skillCandidatePath, error) {
+	var candidates []skillCandidatePath
+	for _, skill := range declared {
+		path, ok := safeManifestPath(root, pluginBase, skill)
+		if ok && isRegularFile(filepath.Join(path, "SKILL.md")) {
+			candidates = appendUniqueCandidatePaths(candidates, skillCandidatePath{path: path, priority: priority})
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(pluginBase, "skills"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return candidates, nil
+		}
+		return nil, fmt.Errorf("scan Claude plugin skills in %q: %w", pluginBase, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(pluginBase, "skills", entry.Name())
+		if entry.IsDir() && isRegularFile(filepath.Join(path, "SKILL.md")) {
+			candidates = appendUniqueCandidatePaths(candidates, skillCandidatePath{path: path, priority: priority})
+		}
+	}
+	return candidates, nil
+}
+
+func safeManifestPath(root, base, path string) (string, bool) {
+	if !strings.HasPrefix(path, "./") {
+		return "", false
+	}
+	relative := filepath.FromSlash(strings.TrimPrefix(path, "./"))
+	if relative == "" {
+		relative = "."
+	}
+	if !filepath.IsLocal(relative) {
+		return "", false
+	}
+	candidate := filepath.Clean(filepath.Join(base, relative))
+	withinRoot, err := filepath.Rel(root, candidate)
+	if err != nil || withinRoot == ".." || strings.HasPrefix(withinRoot, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return candidate, true
+}
+
+func readJSONFile(path string, target any) bool {
+	content, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(content, target) != nil {
+		return false
+	}
+	return true
 }
 
 func collectCategorizedSkillPaths(category string, priority int) ([]skillCandidatePath, error) {
