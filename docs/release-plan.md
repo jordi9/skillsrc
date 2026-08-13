@@ -20,9 +20,9 @@ Move and push the `main` bookmark before tagging, then preview or publish:
 ./release.sh
 ```
 
-The script refuses to release unless local `main` matches `origin/main`. It calculates the three semantic-version
-candidates from the latest stable tag, previews release notes for the exact `main` commit, and asks for confirmation.
-Pushing the selected tag is the only release trigger.
+The script refuses to release unless local `main` matches `origin/main` and contains commits after the latest stable
+tag. It calculates the three semantic-version candidates, previews release notes for the exact `main` commit, and asks
+for confirmation. Pushing the selected tag is the only release trigger.
 
 Each release contains:
 

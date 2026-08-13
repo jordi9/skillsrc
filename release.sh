@@ -62,6 +62,11 @@ else
   version=${latest#v}
   IFS=. read -r major minor patch <<< "$version"
   range="$latest..$local_main"
+
+  if [[ $("${git_command[@]}" rev-list --count "$range") -eq 0 ]]; then
+    echo "No commits on main since $latest; move and push main before releasing" >&2
+    exit 1
+  fi
 fi
 
 patch_version="v${major}.${minor}.$((patch + 1))"
