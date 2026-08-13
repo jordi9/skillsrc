@@ -131,7 +131,8 @@ Skill discovery is limited to:
 - `skills/*`, plus one category level for grouped repositories;
 - `.agents/skills/*`; and
 - `.claude/skills/*`; and
-- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including each declared plugin's conventional `skills/*` directory.
+- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including each
+  declared plugin's conventional `skills/*` directory.
 
 Claude plugin manifest paths must use safe local `./...` paths. Remote plugin sources and absolute, bare, or escaping
 paths are ignored.
