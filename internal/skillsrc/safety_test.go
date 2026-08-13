@@ -107,6 +107,24 @@ func TestSyncRefusesToPruneFormerlyManagedSkillWithoutOwnershipMarker(t *testing
 	assert.Contains(t, string(content), "preserve")
 }
 
+func TestPublishRefusesDestinationThatLostOwnershipAfterStaging(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := filepath.Join(root, "skills")
+	installer := newInstaller(target, filepath.Join(root, "skills.toml"), filepath.Join(root, "locks"))
+	makeSkill(t, filepath.Join(target, "one"), "one", "unmanaged replacement")
+	staging := filepath.Join(target, ".one.skillsrc-tmp-test")
+	makeSkill(t, staging, "one", "staged managed skill")
+
+	published, err := installer.publishStagedSkill(staging, filepath.Join(target, "one"), "one")
+	require.False(t, published)
+	require.ErrorIs(t, err, errUnmanagedCollision)
+	content, readErr := os.ReadFile(filepath.Join(target, "one", "SKILL.md"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(content), "unmanaged replacement")
+	assert.DirExists(t, staging)
+}
+
 func TestInstallerRejectsEscapingTransactionPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

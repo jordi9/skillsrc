@@ -883,6 +883,12 @@ func mergeAddedLock(oldLock Lock, added LockSource, previous int) Lock {
 }
 
 func (engine *Engine) applyAddedLocked(ctx context.Context, installer *installer, manifest Manifest, oldLock, newLock Lock, resolved resolvedSource) ([]SkillAction, error) {
+	if err := engine.preflightInstallations(installer, []resolvedSource{resolved}, oldLock, newLock); err != nil {
+		return nil, err
+	}
+	if err := engine.prepareProjectMutation(oldLock, newLock); err != nil {
+		return nil, err
+	}
 	disabled := make(map[string]bool)
 	for _, source := range manifest.Sources {
 		for _, name := range source.Skills {
@@ -893,7 +899,7 @@ func (engine *Engine) applyAddedLocked(ctx context.Context, installer *installer
 	for _, skill := range resolved.lock.Skills {
 		action, err := engine.installResolvedSkill(ctx, installer, resolved.root, skill, oldLock, disabled[skill.Name])
 		if err != nil {
-			return actions, err
+			return actions, engine.handleInstallFailure(err, oldLock, newLock, skill.Name)
 		}
 		actions = append(actions, action)
 	}
@@ -907,6 +913,12 @@ func (engine *Engine) applyAddedLocked(ctx context.Context, installer *installer
 func (engine *Engine) applyLocked(ctx context.Context, installer *installer, manifest Manifest, oldLock, newLock Lock, resolved []resolvedSource) ([]SkillAction, error) {
 	defer cleanupResolvedSources(resolved)
 
+	if err := engine.preflightInstallations(installer, resolved, oldLock, newLock); err != nil {
+		return nil, err
+	}
+	if err := engine.prepareProjectMutation(oldLock, newLock); err != nil {
+		return nil, err
+	}
 	disabled := make(map[string]bool)
 	for _, source := range manifest.Sources {
 		for _, name := range source.Skills {
@@ -918,7 +930,7 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 		for _, skill := range source.lock.Skills {
 			action, err := engine.installResolvedSkill(ctx, installer, source.root, skill, oldLock, disabled[skill.Name])
 			if err != nil {
-				return actions, err
+				return actions, engine.handleInstallFailure(err, oldLock, newLock, skill.Name)
 			}
 			actions = append(actions, action)
 		}
@@ -938,6 +950,27 @@ func (engine *Engine) applyLocked(ctx context.Context, installer *installer, man
 		return actions[i].Name < actions[j].Name
 	})
 	return actions, nil
+}
+
+func (engine *Engine) preflightInstallations(installer *installer, resolved []resolvedSource, oldLock, newLock Lock) error {
+	var failures []error
+	excluded := make(map[string]struct{})
+	for _, source := range resolved {
+		for _, skill := range source.lock.Skills {
+			if err := installer.validateInstallTarget(skill.Name); err != nil {
+				failures = append(failures, fmt.Errorf("install %q: %w", skill.Name, err))
+				if errors.Is(err, errUnmanagedCollision) {
+					excluded[skill.Name] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(excluded) > 0 && engine.options.ProjectRoot != "" {
+		if err := WriteManagedGitignore(engine.options.ProjectRoot, pendingProjectLock(oldLock, newLock, excluded)); err != nil {
+			failures = append(failures, fmt.Errorf("restore project metadata after collision: %w", err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func cleanupResolvedSources(resolved []resolvedSource) {
@@ -994,6 +1027,44 @@ func (engine *Engine) pruneRemovedSkills(installer *installer, oldLock, newLock 
 		}
 	}
 	return actions, nil
+}
+
+func (engine *Engine) prepareProjectMutation(oldLock, newLock Lock) error {
+	if engine.options.ProjectRoot == "" {
+		return nil
+	}
+	if err := EnsureRootGitignore(engine.options.ProjectRoot); err != nil {
+		return fmt.Errorf("prepare project metadata before installation: %w", err)
+	}
+	if err := WriteManagedGitignore(engine.options.ProjectRoot, pendingProjectLock(oldLock, newLock, nil)); err != nil {
+		return fmt.Errorf("prepare project metadata before installation: %w", err)
+	}
+	return nil
+}
+
+func (engine *Engine) handleInstallFailure(installErr error, oldLock, newLock Lock, skillName string) error {
+	if engine.options.ProjectRoot == "" || !errors.Is(installErr, errUnmanagedCollision) {
+		return installErr
+	}
+	if err := WriteManagedGitignore(engine.options.ProjectRoot, pendingProjectLock(oldLock, newLock, map[string]struct{}{skillName: {}})); err != nil {
+		return errors.Join(installErr, fmt.Errorf("restore project metadata after collision: %w", err))
+	}
+	return installErr
+}
+
+func pendingProjectLock(oldLock, newLock Lock, excluded map[string]struct{}) Lock {
+	pending := Lock{Version: SchemaVersion}
+	for _, source := range append(append([]LockSource(nil), oldLock.Sources...), newLock.Sources...) {
+		filtered := source
+		filtered.Skills = nil
+		for _, skill := range source.Skills {
+			if _, skip := excluded[skill.Name]; !skip {
+				filtered.Skills = append(filtered.Skills, skill)
+			}
+		}
+		pending.Sources = append(pending.Sources, filtered)
+	}
+	return pending
 }
 
 func (engine *Engine) persistAppliedLock(lock Lock) error {

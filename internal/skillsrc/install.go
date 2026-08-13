@@ -34,6 +34,8 @@ type transaction struct {
 	Backup  string `json:"backup,omitempty"`
 }
 
+var errUnmanagedCollision = errors.New("unmanaged collision")
+
 type installer struct {
 	target           string
 	manifestLockPath string
@@ -99,22 +101,35 @@ func cacheLockPath(lockDir, resource string) string {
 	return filepath.Join(lockDir, hex.EncodeToString(digest[:])+".lock")
 }
 
+func (installer *installer) validateInstallTarget(name string) error {
+	destination := filepath.Join(installer.target, name)
+	info, err := os.Lstat(destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect install target %q: %w", destination, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%w at %q", errUnmanagedCollision, destination)
+	}
+	managed, markerErr := installer.managed(destination, name)
+	if markerErr != nil || !managed {
+		return fmt.Errorf("%w at %q", errUnmanagedCollision, destination)
+	}
+	return nil
+}
+
 func (installer *installer) install(ctx context.Context, name, sourceDir, expectedHash string, disableModelInvocation bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := installer.validateInstallTarget(name); err != nil {
+		return err
+	}
 	destination := filepath.Join(installer.target, name)
-	if info, err := os.Lstat(destination); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("unmanaged collision at %q", destination)
-		}
-		managed, markerErr := installer.managed(destination, name)
-		if markerErr != nil || !managed {
-			return fmt.Errorf("unmanaged collision at %q", destination)
-		}
-		if installedStatus(installer, installer.target, LockedSkill{Name: name, Hash: expectedHash}, disableModelInvocation) == "current" {
-			return nil
-		}
+	if installedStatus(installer, installer.target, LockedSkill{Name: name, Hash: expectedHash}, disableModelInvocation) == "current" {
+		return nil
 	}
 
 	staging, err := os.MkdirTemp(installer.target, "."+name+".skillsrc-tmp-")
@@ -168,7 +183,13 @@ func (installer *installer) stageSkill(ctx context.Context, staging, name, sourc
 
 func (installer *installer) publishStagedSkill(staging, destination, name string) (bool, error) {
 	if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
+		if err := installer.validateInstallTarget(name); err != nil {
+			return false, err
+		}
 		if err := os.Rename(staging, destination); err != nil {
+			if collisionErr := installer.validateInstallTarget(name); errors.Is(collisionErr, errUnmanagedCollision) {
+				return false, collisionErr
+			}
 			return false, fmt.Errorf("publish skill %q: %w", name, err)
 		}
 		return true, syncDirectory(installer.target)
@@ -184,10 +205,25 @@ func (installer *installer) publishStagedSkill(staging, destination, name string
 		_ = os.Remove(journalPath)
 		return false, fmt.Errorf("move current skill %q aside: %w", name, err)
 	}
+	managed, markerErr := installer.managed(backup, name)
+	if markerErr != nil || !managed {
+		restoreErr := os.Rename(backup, destination)
+		if restoreErr == nil {
+			_ = os.Remove(journalPath)
+			_ = syncDirectory(installer.target)
+		}
+		collision := fmt.Errorf("%w at %q", errUnmanagedCollision, destination)
+		if restoreErr != nil {
+			return false, errors.Join(collision, fmt.Errorf("restore collision at %q: %w", destination, restoreErr))
+		}
+		return false, collision
+	}
 	if err := os.Rename(staging, destination); err != nil {
 		restoreErr := os.Rename(backup, destination)
 		if restoreErr == nil {
 			_ = os.Remove(journalPath)
+		} else if collisionErr := installer.validateInstallTarget(name); errors.Is(collisionErr, errUnmanagedCollision) {
+			return false, errors.Join(collisionErr, fmt.Errorf("publish replacement for %q: %w (restore: %v)", name, err, restoreErr))
 		}
 		return false, fmt.Errorf("publish replacement for %q: %w (restore: %v)", name, err, restoreErr)
 	}

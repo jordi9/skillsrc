@@ -55,6 +55,25 @@ func TestDoctorReportsAndRepairsProjectMetadata(t *testing.T) {
 	assert.Contains(t, string(managed), "/skills/one/\n")
 }
 
+func TestSyncIgnoresDeclaredSkillBeforeInstallation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	writeTestFile(t, filepath.Join(local, "one", "SKILL.md"), "---\nname: one\n")
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version = 1\n[[sources]]\npath = \"./local\"\nskills = [\"!one\"]\n")
+	options := testOptions(root, manifest)
+	options.ProjectRoot = root
+
+	_, err := NewEngine(options).Sync(context.Background())
+	require.ErrorContains(t, err, "closing YAML frontmatter delimiter")
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "one"))
+	assert.NoFileExists(t, options.LockPath)
+	managed, readErr := os.ReadFile(filepath.Join(root, ".agents", ".gitignore"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(managed), "/skills/one/\n")
+}
+
 func TestFailedProjectMutationLeavesManagedGitignoreUnchanged(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -76,6 +95,27 @@ func TestFailedProjectMutationLeavesManagedGitignoreUnchanged(t *testing.T) {
 	after, err := os.ReadFile(ignorePath)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+func TestSyncDoesNotIgnoreUnmanagedCollision(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "local")
+	makeSkill(t, filepath.Join(local, "one"), "one", "managed candidate")
+	manifest := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifest, "version = 1\n[[sources]]\npath = \"./local\"\nskills = [\"one\"]\n")
+	options := testOptions(root, manifest)
+	options.ProjectRoot = root
+	require.NoError(t, EnsureRootGitignore(root))
+	staleLock := Lock{Version: SchemaVersion, Sources: []LockSource{{Skills: []LockedSkill{{Name: "one"}}}}}
+	require.NoError(t, WriteManagedGitignore(root, staleLock))
+	makeSkill(t, filepath.Join(options.TargetDir, "one"), "one", "unmanaged")
+
+	_, err := NewEngine(options).Sync(context.Background())
+	require.ErrorContains(t, err, "unmanaged collision")
+	managed, readErr := os.ReadFile(filepath.Join(root, ".agents", ".gitignore"))
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(managed), "/skills/one/\n")
 }
 
 func TestRemoveRefreshesManagedGitignoreWithoutHidingUnmanagedSkills(t *testing.T) {
