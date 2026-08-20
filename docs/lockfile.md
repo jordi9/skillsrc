@@ -15,7 +15,6 @@ kind = "git"
 identity = "github.com/owner/repository"
 repo = "owner/repository"
 ref = "main"
-plugin = "pstack" # present when the manifest source is plugin-scoped
 commit = "0123456789abcdef0123456789abcdef01234567"
 
 [[sources.skills]]
@@ -27,7 +26,6 @@ disable_model_invocation = true # only when disabled by the source
 
 - `identity` is the normalized repository identity used for matching and caching.
 - `repo` and optional `ref` preserve the manifest declaration.
-- `plugin`, when present, preserves the manifest-backed plugin scope so same-repository plugins remain distinct.
 - `commit` is the resolved exact Git commit.
 
 A local source records no Git ref or commit:

@@ -75,19 +75,8 @@ func (engine *Engine) newInstaller() *installer {
 	return newInstaller(engine.options.TargetDir, engine.options.ManifestPath, lockDir)
 }
 
-type AddAvailability struct {
-	Skills     []string
-	Standalone []string
-	Plugins    []AvailablePlugin
-}
-
-type AvailablePlugin struct {
-	Name   string
-	Skills []string
-}
-
-func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested []string, all, userOnly bool) (AddAvailability, Result, error) {
-	var available AddAvailability
+func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested []string, all, userOnly bool) ([]string, Result, error) {
+	var available []string
 	var result Result
 	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
@@ -98,27 +87,22 @@ func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested 
 	return available, result, err
 }
 
-func (engine *Engine) addLocked(ctx context.Context, installer *installer, source ManifestSource, requested []string, all, userOnly bool) (AddAvailability, Result, error) {
+func (engine *Engine) addLocked(ctx context.Context, installer *installer, source ManifestSource, requested []string, all, userOnly bool) ([]string, Result, error) {
 	manifest, err := LoadManifest(engine.options.ManifestPath)
 	if err != nil {
-		return AddAvailability{}, Result{}, err
+		return nil, Result{}, err
 	}
 	oldLock, err := LoadLock(engine.options.LockPath)
 	if err != nil {
-		return AddAvailability{}, Result{}, err
+		return nil, Result{}, err
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	available, lockedCommit, lockedSource, err := engine.discoverForAdd(ctx, source, manifest, oldLock, git)
 	result := Result{Fetches: git.Fetches()}
 	if err != nil {
-		return AddAvailability{}, result, err
+		return nil, result, err
 	}
-	var selected []string
-	if source.Plugin == "" && len(requested) == 0 && !all && len(available.Plugins) > 0 {
-		selected = nil
-	} else {
-		selected, err = selectAddedSkills(available.Skills, requested, all || source.Plugin != "" && len(requested) == 0)
-	}
+	selected, err := selectAddedSkills(available, requested, all)
 	if err != nil {
 		if lockedCommit != "" {
 			return available, result, fmt.Errorf("requested skill is not available at locked revision %.12s; run 'skillsrc update %s' before adding it: %w", lockedCommit, lockedSource, err)
@@ -129,42 +113,10 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		return available, result, nil
 	}
 	declared := manifestSkillNames(manifest)
-	existingIndex, indexErr := manifestSourceIndex(manifest, source)
-	if indexErr != nil {
-		return available, result, indexErr
-	}
-	if source.Plugin != "" {
-		if err := ensurePluginSelectionDoesNotOverlap(manifest, oldLock, existingIndex, selected); err != nil {
-			return available, result, err
-		}
-	}
-	narrowingPlugin := existingIndex >= 0 && manifest.Sources[existingIndex].Plugin != "" && len(manifest.Sources[existingIndex].Skills) == 0 && len(requested) > 0
-	expandingPlugin := existingIndex >= 0 && manifest.Sources[existingIndex].Plugin != "" && len(manifest.Sources[existingIndex].Skills) > 0 && len(requested) == 0 && !all && !userOnly
-	if existingIndex >= 0 && manifest.Sources[existingIndex].Plugin != "" && len(manifest.Sources[existingIndex].Skills) == 0 {
-		if locked := matchingAnyLockSource(oldLock, manifest.Sources[existingIndex]); locked != nil {
-			for _, skill := range locked.Skills {
-				declared[skill.Name] = struct{}{}
-			}
-		}
-	}
-	manifestSelection := selected
-	if source.Plugin != "" && len(requested) == 0 && !all && !userOnly {
-		manifestSelection = nil
-		if expandingPlugin {
-			manifest.Sources[existingIndex].Skills = nil
-			manifest.Sources[existingIndex].DisableModelInvocation = make(map[string]bool)
-		}
-	}
-	if err := addSkillsToManifest(&manifest, source, manifestSelection, userOnly); err != nil {
+	if err := addSkillsToManifest(&manifest, source, selected, userOnly); err != nil {
 		return available, result, err
 	}
 	if err := validateManifest(&manifest); err != nil {
-		return available, result, err
-	}
-	if narrowingPlugin || expandingPlugin {
-		changed, err := engine.applyManifestChange(ctx, installer, manifest, oldLock)
-		result.Fetches = append(result.Fetches, changed.Fetches...)
-		result.Skills = changed.Skills
 		return available, result, err
 	}
 	added := newlySelectedSkills(selected, declared)
@@ -194,50 +146,6 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		return available, result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
 	}
 	return available, result, nil
-}
-
-func ensurePluginSelectionDoesNotOverlap(manifest Manifest, lock Lock, sourceIndex int, selected []string) error {
-	wanted := make(map[string]struct{}, len(selected))
-	for _, name := range selected {
-		wanted[name] = struct{}{}
-	}
-	for index, source := range manifest.Sources {
-		if index == sourceIndex {
-			continue
-		}
-		for _, name := range source.Skills {
-			if _, overlap := wanted[name]; overlap {
-				return &ValidationError{Problem: fmt.Sprintf("skill %q is already declared by another source", name)}
-			}
-		}
-	}
-	var current ManifestSource
-	if sourceIndex >= 0 {
-		current = manifest.Sources[sourceIndex]
-	}
-	for _, lockedSource := range lock.Sources {
-		if sourceIndex >= 0 {
-			kind := SourceLocal
-			identity := LocalIdentity(localIdentityPath(current.Path))
-			if current.Repo != "" {
-				kind = SourceGit
-				repository, err := NormalizeRepository(current.Repo)
-				if err != nil {
-					return err
-				}
-				identity = repository.Identity
-			}
-			if lockSourceMatchesManifest(lockedSource, kind, identity, current) {
-				continue
-			}
-		}
-		for _, skill := range lockedSource.Skills {
-			if _, overlap := wanted[skill.Name]; overlap {
-				return &ValidationError{Problem: fmt.Sprintf("skill %q is already declared by another source", skill.Name)}
-			}
-		}
-	}
-	return nil
 }
 
 func manifestSkillNames(manifest Manifest) map[string]struct{} {
@@ -344,24 +252,6 @@ func (engine *Engine) removeLocked(ctx context.Context, installer *installer, na
 	return engine.applyManifestChange(ctx, installer, manifest, oldLock)
 }
 
-func (engine *Engine) RemovePlugins(ctx context.Context, plugins []string) (Result, error) {
-	var result Result
-	installer := engine.newInstaller()
-	err := installer.withLock(ctx, func() error {
-		manifest, oldLock, loadErr := engine.load()
-		if loadErr != nil {
-			return loadErr
-		}
-		if removeErr := removePluginsFromManifest(&manifest, plugins); removeErr != nil {
-			return removeErr
-		}
-		var applyErr error
-		result, applyErr = engine.applyManifestChange(ctx, installer, manifest, oldLock)
-		return applyErr
-	})
-	return result, err
-}
-
 func (engine *Engine) applyManifestChange(ctx context.Context, installer *installer, manifest Manifest, oldLock Lock) (Result, error) {
 	filteredLock := lockForManifest(oldLock, manifest)
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
@@ -385,36 +275,6 @@ func (engine *Engine) applyManifestChange(ctx context.Context, installer *instal
 		return result, fmt.Errorf("manifest updated; sync incomplete: %w", err)
 	}
 	return result, nil
-}
-
-func removePluginsFromManifest(manifest *Manifest, plugins []string) error {
-	wanted := make(map[string]struct{}, len(plugins))
-	for _, plugin := range plugins {
-		wanted[plugin] = struct{}{}
-	}
-	counts := make(map[string]int)
-	for _, source := range manifest.Sources {
-		if _, selected := wanted[source.Plugin]; selected {
-			counts[source.Plugin]++
-		}
-	}
-	for _, plugin := range plugins {
-		switch counts[plugin] {
-		case 0:
-			return &ValidationError{Problem: fmt.Sprintf("plugin %q is not declared", plugin)}
-		case 1:
-		default:
-			return &ValidationError{Problem: fmt.Sprintf("plugin %q is declared by multiple sources", plugin)}
-		}
-	}
-	kept := manifest.Sources[:0]
-	for _, source := range manifest.Sources {
-		if _, remove := wanted[source.Plugin]; !remove {
-			kept = append(kept, source)
-		}
-	}
-	manifest.Sources = kept
-	return nil
 }
 
 func removeSkillsFromManifest(manifest *Manifest, names []string) error {
@@ -458,7 +318,7 @@ func lockForManifest(lock Lock, manifest Manifest) Lock {
 			selected[name] = struct{}{}
 		}
 		for _, locked := range lock.Sources {
-			matches := locked.Ref == source.Ref && locked.Plugin == source.Plugin
+			matches := locked.Ref == source.Ref
 			if source.Repo != "" {
 				repository, err := NormalizeRepository(source.Repo)
 				matches = matches && err == nil && locked.Kind == SourceGit && locked.Identity == repository.Identity
@@ -469,16 +329,14 @@ func lockForManifest(lock Lock, manifest Manifest) Lock {
 				continue
 			}
 			kept := locked
-			if source.Plugin == "" || len(source.Skills) > 0 {
-				kept.Skills = nil
-				for _, skill := range locked.Skills {
-					if _, ok := selected[skill.Name]; ok {
-						kept.Skills = append(kept.Skills, skill)
-					}
+			kept.Skills = nil
+			for _, skill := range locked.Skills {
+				if _, ok := selected[skill.Name]; ok {
+					kept.Skills = append(kept.Skills, skill)
 				}
-				if len(kept.Skills) != len(selected) {
-					break
-				}
+			}
+			if len(kept.Skills) != len(selected) {
+				break
 			}
 			filtered.Sources = append(filtered.Sources, kept)
 			break
@@ -505,7 +363,7 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 			return -1, err
 		}
 		for index, source := range manifest.Sources {
-			if source.Repo == "" || source.Ref != candidate.Ref || source.Plugin != candidate.Plugin {
+			if source.Repo == "" || source.Ref != candidate.Ref {
 				continue
 			}
 			repository, err := NormalizeRepository(source.Repo)
@@ -519,44 +377,44 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 		return -1, nil
 	}
 	for index, source := range manifest.Sources {
-		if source.Path != "" && source.Plugin == candidate.Plugin && filepath.Clean(source.ResolvedPath) == filepath.Clean(candidate.ResolvedPath) {
+		if source.Path != "" && filepath.Clean(source.ResolvedPath) == filepath.Clean(candidate.ResolvedPath) {
 			return index, nil
 		}
 	}
 	return -1, nil
 }
 
-func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) (AddAvailability, string, string, error) {
+func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) ([]string, string, string, error) {
 	index, err := manifestSourceIndex(manifest, source)
 	if err != nil || index < 0 || source.Repo == "" {
-		available, discoverErr := engine.discoverAvailability(ctx, source, git)
+		available, discoverErr := engine.discover(ctx, source, git)
 		return available, "", "", discoverErr
 	}
 	existing := manifest.Sources[index]
 	repository, err := NormalizeRepository(existing.Repo)
 	if err != nil {
-		return AddAvailability{}, "", "", err
+		return nil, "", "", err
 	}
 	previous := matchingLockSource(lock, existing, repository.Identity)
 	if previous == nil {
-		available, discoverErr := engine.discoverAvailability(ctx, source, git)
+		available, discoverErr := engine.discover(ctx, source, git)
 		return available, "", "", discoverErr
 	}
 	commit, err := git.Resolve(ctx, existing.Repo, existing.Ref, false, previous.Commit)
 	if err != nil {
-		return AddAvailability{}, previous.Commit, existing.Repo, err
+		return nil, previous.Commit, existing.Repo, err
 	}
 	root, err := os.MkdirTemp("", "skillsrc-git-")
 	if err != nil {
-		return AddAvailability{}, commit, existing.Repo, err
+		return nil, commit, existing.Repo, err
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 	if err := git.Materialize(ctx, existing.Repo, commit, root); err != nil {
-		return AddAvailability{}, commit, existing.Repo, err
+		return nil, commit, existing.Repo, err
 	}
-	available, err := discoverAvailabilityAtRoot(root, source.Plugin)
+	available, err := discoveredNames(root)
 	if err != nil {
-		return AddAvailability{}, commit, existing.Repo, err
+		return nil, commit, existing.Repo, err
 	}
 	return available, commit, existing.Repo, nil
 }
@@ -568,76 +426,35 @@ func (engine *Engine) Discover(ctx context.Context, source ManifestSource) ([]st
 }
 
 func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *GitOperation) ([]string, error) {
-	available, err := engine.discoverAvailability(ctx, source, git)
-	return available.Skills, err
-}
-
-func (engine *Engine) discoverAvailability(ctx context.Context, source ManifestSource, git *GitOperation) (AddAvailability, error) {
 	root := source.ResolvedPath
 	if source.Repo != "" {
 		commit, err := git.Resolve(ctx, source.Repo, source.Ref, true, "")
 		if err != nil {
-			return AddAvailability{}, err
+			return nil, err
 		}
 		root, err = os.MkdirTemp("", "skillsrc-discover-")
 		if err != nil {
-			return AddAvailability{}, err
+			return nil, err
 		}
 		defer func() { _ = os.RemoveAll(root) }()
 		if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
-			return AddAvailability{}, err
+			return nil, err
 		}
 	}
-	return discoverAvailabilityAtRoot(root, source.Plugin)
+	return discoveredNames(root)
 }
 
-func discoverAvailabilityAtRoot(root, plugin string) (AddAvailability, error) {
-	if plugin != "" {
-		discovered, err := DiscoverPluginSkills(root, plugin)
-		if err != nil {
-			return AddAvailability{}, err
-		}
-		return AddAvailability{Skills: sortedDiscoveredNames(discovered)}, nil
-	}
-	discovery, err := DiscoverSkillSources(root)
+func discoveredNames(root string) ([]string, error) {
+	discovered, err := DiscoverSkills(root)
 	if err != nil {
-		return AddAvailability{}, err
+		return nil, err
 	}
-	available := AddAvailability{Skills: sortedDiscoveredNames(discovery.Global)}
-	for name, skill := range discovery.Global {
-		pluginOwned := false
-		for _, pluginSkills := range discovery.Plugins {
-			if pluginSkill, ok := pluginSkills[name]; ok && pluginSkill.Path == skill.Path {
-				pluginOwned = true
-				break
-			}
-		}
-		if !pluginOwned {
-			available.Standalone = append(available.Standalone, name)
-		}
-	}
-	sort.Strings(available.Standalone)
-	pluginNames := make([]string, 0, len(discovery.Plugins))
-	for name := range discovery.Plugins {
-		pluginNames = append(pluginNames, name)
-	}
-	sort.Strings(pluginNames)
-	for _, name := range pluginNames {
-		available.Plugins = append(available.Plugins, AvailablePlugin{
-			Name:   name,
-			Skills: sortedDiscoveredNames(discovery.Plugins[name]),
-		})
-	}
-	return available, nil
-}
-
-func sortedDiscoveredNames(discovered map[string]DiscoveredSkill) []string {
 	names := make([]string, 0, len(discovered))
 	for name := range discovered {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
 type resolvedSource struct {
@@ -767,7 +584,7 @@ func (engine *Engine) changedGitSkills(ctx context.Context, git *GitOperation, s
 	if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
 		return nil, err
 	}
-	current, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: identity, Repo: source.Repo, Ref: source.Ref, Plugin: source.Plugin, Commit: commit}, source)
+	current, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, source)
 	if err != nil {
 		return nil, fmt.Errorf("git source %q at %s: %w", source.Repo, commit, err)
 	}
@@ -811,18 +628,12 @@ func changedLocalSkills(lock Lock, manifestSource ManifestSource, current LockSo
 		if locked.Kind == SourceLocal &&
 			locked.Identity == current.Identity &&
 			locked.Path == manifestSource.Path &&
-			locked.Plugin == manifestSource.Plugin &&
-			(manifestSource.Plugin != "" && len(manifestSource.Skills) == 0 || selectsExactly(locked.Skills, manifestSource.Skills)) {
+			selectsExactly(locked.Skills, manifestSource.Skills) {
 			candidates = append(candidates, locked)
 		}
 	}
 	if len(candidates) != 1 {
 		changed := append([]string(nil), manifestSource.Skills...)
-		if manifestSource.Plugin != "" && len(changed) == 0 {
-			for _, skill := range current.Skills {
-				changed = append(changed, skill.Name)
-			}
-		}
 		sort.Strings(changed)
 		return changed
 	}
@@ -836,18 +647,6 @@ func changedLocalSkills(lock Lock, manifestSource ManifestSource, current LockSo
 		lockedByName[skill.Name] = skill
 	}
 	names := append([]string(nil), manifestSource.Skills...)
-	if manifestSource.Plugin != "" && len(names) == 0 {
-		seen := make(map[string]struct{}, len(lockedByName)+len(currentByName))
-		for name := range lockedByName {
-			seen[name] = struct{}{}
-		}
-		for name := range currentByName {
-			seen[name] = struct{}{}
-		}
-		for name := range seen {
-			names = append(names, name)
-		}
-	}
 	var changed []string
 	for _, name := range names {
 		lockedSkill, wasLocked := lockedByName[name]
@@ -970,7 +769,7 @@ func (engine *Engine) resolve(ctx context.Context, manifest Manifest, oldLock Lo
 			_ = os.RemoveAll(root)
 			return nil, err
 		}
-		entry, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Plugin: source.Plugin, Commit: commit}, source)
+		entry, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, source)
 		if err != nil {
 			_ = os.RemoveAll(root)
 			return nil, fmt.Errorf("git source %q at %s: %w", source.Repo, commit, err)
@@ -983,25 +782,16 @@ func (engine *Engine) resolve(ctx context.Context, manifest Manifest, oldLock Lo
 
 func resolveLocalSource(source ManifestSource) (resolvedSource, error) {
 	identityPath := localIdentityPath(source.Path)
-	entry := LockSource{Kind: SourceLocal, Identity: LocalIdentity(identityPath), Path: source.Path, Plugin: source.Plugin}
+	entry := LockSource{Kind: SourceLocal, Identity: LocalIdentity(identityPath), Path: source.Path}
 	return resolveDiscoveredSource(source.ResolvedPath, entry, source)
 }
 
 func resolveDiscoveredSource(root string, lockSource LockSource, source ManifestSource) (resolvedSource, error) {
 	found, err := DiscoverSkills(root)
-	if source.Plugin != "" {
-		found, err = DiscoverPluginSkills(root, source.Plugin)
-	}
 	if err != nil {
 		return resolvedSource{}, err
 	}
 	selected := append([]string(nil), source.Skills...)
-	if source.Plugin != "" && len(selected) == 0 {
-		for name := range found {
-			selected = append(selected, name)
-		}
-		sort.Strings(selected)
-	}
 	for _, name := range selected {
 		discovered, ok := found[name]
 		if !ok {
@@ -1034,9 +824,9 @@ func resolveDiscoveredSource(root string, lockSource LockSource, source Manifest
 
 func (engine *Engine) resolveAddedSource(ctx context.Context, source ManifestSource, added []string, oldLock Lock, git *GitOperation) (resolvedSource, int, error) {
 	if source.Path != "" {
-		lockSource := LockSource{Kind: SourceLocal, Identity: LocalIdentity(localIdentityPath(source.Path)), Path: source.Path, Plugin: source.Plugin}
+		lockSource := LockSource{Kind: SourceLocal, Identity: LocalIdentity(localIdentityPath(source.Path)), Path: source.Path}
 		previous := matchingLockSourceForAddition(oldLock, source, lockSource.Kind, lockSource.Identity)
-		resolved, err := resolveDiscoveredSource(source.ResolvedPath, lockSource, ManifestSource{Plugin: source.Plugin, Skills: added})
+		resolved, err := resolveDiscoveredSource(source.ResolvedPath, lockSource, ManifestSource{Skills: added})
 		return resolved, previous, err
 	}
 
@@ -1061,7 +851,7 @@ func (engine *Engine) resolveAddedSource(ctx context.Context, source ManifestSou
 		_ = os.RemoveAll(root)
 		return resolvedSource{}, previous, err
 	}
-	resolved, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Plugin: source.Plugin, Commit: commit}, ManifestSource{Plugin: source.Plugin, Skills: added})
+	resolved, err := resolveDiscoveredSource(root, LockSource{Kind: SourceGit, Identity: repository.Identity, Repo: source.Repo, Ref: source.Ref, Commit: commit}, ManifestSource{Skills: added})
 	if err != nil {
 		_ = os.RemoveAll(root)
 		var validation *ValidationError
@@ -1082,9 +872,6 @@ func matchingLockSourceForAddition(lock Lock, source ManifestSource, kind Source
 	best, bestSkills := -1, -1
 	for index, candidate := range lock.Sources {
 		if candidate.Kind != kind || candidate.Identity != identity {
-			continue
-		}
-		if candidate.Plugin != source.Plugin {
 			continue
 		}
 		if kind == SourceGit && (candidate.Repo != source.Repo || candidate.Ref != source.Ref) {
@@ -1324,35 +1111,13 @@ func (engine *Engine) persistAppliedLock(lock Lock) error {
 	return nil
 }
 
-func matchingAnyLockSource(lock Lock, source ManifestSource) *LockSource {
-	kind := SourceLocal
-	identity := LocalIdentity(localIdentityPath(source.Path))
-	if source.Repo != "" {
-		kind = SourceGit
-		repository, err := NormalizeRepository(source.Repo)
-		if err != nil {
-			return nil
-		}
-		identity = repository.Identity
-	}
-	for index := range lock.Sources {
-		if lockSourceMatchesManifest(lock.Sources[index], kind, identity, source) {
-			return &lock.Sources[index]
-		}
-	}
-	return nil
-}
-
 func matchingLockSource(lock Lock, source ManifestSource, identity string) *LockSource {
 	wanted := append([]string(nil), source.Skills...)
 	sort.Strings(wanted)
 	for i := range lock.Sources {
 		candidate := &lock.Sources[i]
-		if candidate.Kind != SourceGit || candidate.Identity != identity || candidate.Repo != source.Repo || candidate.Ref != source.Ref || candidate.Plugin != source.Plugin {
+		if candidate.Kind != SourceGit || candidate.Identity != identity || candidate.Repo != source.Repo || candidate.Ref != source.Ref {
 			continue
-		}
-		if source.Plugin != "" && len(source.Skills) == 0 {
-			return candidate
 		}
 		got := make([]string, len(candidate.Skills))
 		for j, skill := range candidate.Skills {
@@ -1410,7 +1175,7 @@ func selectUpdates(manifest Manifest, selectors []string) (map[int]bool, error) 
 			identity = source.Repo
 		}
 		for _, selector := range selectors {
-			if selector == identity || selector == source.Plugin || slices.Contains(source.Skills, selector) {
+			if selector == identity || slices.Contains(source.Skills, selector) {
 				selected[i] = true
 				matched[selector] = true
 			}

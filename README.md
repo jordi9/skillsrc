@@ -39,11 +39,12 @@ skillsrc add owner/repository@skill-name
 
 `add` records the selected skill, updates the lockfile, and installs it under `.agents/skills`.
 
-If you do not know the skill name, omit `@skill-name`. A repository containing exactly one skill installs it
-automatically; otherwise, `skillsrc` lists the available skills without changing the configuration:
+If you do not know the skill name, inspect the repository first. `discover` is read-only and does not require a
+`skills.toml`:
 
 ```sh
-skillsrc add owner/repository
+skillsrc discover owner/repository
+skillsrc add owner/repository@skill-name
 ```
 
 Commit `skills.toml`, `skills.lock`, and the root `.gitignore`. After cloning the project elsewhere, install its
@@ -89,7 +90,7 @@ managed skills, so unmanaged or in-place skills under `.agents/skills` remain vi
 
 ## skills.toml
 
-Each source declares exactly one of `repo` or `path` and selects skills by name, or scopes the source to a manifest-declared plugin.
+Each source selects one or more unique skill names and declares exactly one of `repo` or `path`.
 
 ```toml
 version = 1
@@ -102,13 +103,7 @@ skills = ["one", "two"]
 [[sources]]
 path = "../local-skills"  # relative and absolute paths are supported, including ~/...
 skills = ["private-skill"]
-
-[[sources]]
-repo = "cursor/plugins"
-plugin = "pstack"         # tracks every skill declared by this plugin
 ```
-
-A plugin source may also select a stable subset with `skills = ["architect", "arena"]`. Plugin names come from local entries in `.cursor-plugin/marketplace.json`, `.claude-plugin/marketplace.json`, or a root plugin manifest. The lockfile records every resolved skill's exact path and hash.
 
 ### Override model invocation
 
@@ -136,30 +131,32 @@ Skill discovery is limited to:
 - immediate child directories;
 - `skills/*`, plus one category level for grouped repositories;
 - `.agents/skills/*`; and
-- `.claude/skills/*`; and
-- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including each
-  declared plugin's conventional `skills/*` directory; and
-- skill directories declared by local plugins in `.cursor-plugin/marketplace.json` and their `.cursor-plugin/plugin.json` manifests.
+- `.claude/skills/*`;
+- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including conventional
+  `skills/*` directories; and
+- local skill paths declared by `.cursor-plugin/marketplace.json` and `.cursor-plugin/plugin.json`.
 
-Claude plugin paths must use safe local `./...` paths. Cursor marketplace sources accept safe local bare or `./...` paths. Remote, absolute, and escaping plugin paths are ignored. Plugin selection remains bounded to manifest-declared skill locations; unrelated nested `SKILL.md` files are not discovered.
+Manifest paths must stay within the repository. Remote, absolute, and escaping paths are ignored. Claude and Cursor
+metadata only locates skills; skillsrc exposes and stores the resulting skills like any others.
 
-When the same skill name appears in multiple discovery locations, the higher-priority location wins. Identical marketplace copies collapse, and a dedicated same-name plugin wins over a bundle containing that skill; remaining same-priority conflicts are rejected as ambiguous. Exact `--plugin` selection is isolated from copies in other plugins. Safe relative file symlinks that resolve inside a selected skill are copied as regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
+When the same skill name appears in multiple discovery locations, the higher-priority location wins. Identical
+marketplace copies collapse; remaining same-priority conflicts are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as
+regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
 
 ## Commands
 
 ```sh
 skillsrc init                                      # create skills.toml in the current directory
+skillsrc discover SOURCE                          # list discovered skills without changing configuration
+skillsrc discover SOURCE --ref REF                # inspect a branch, tag, or full commit hash
 skillsrc add SOURCE                               # install its sole skill, or list choices when there are multiple
 skillsrc add SOURCE SKILL...                      # declare selected skills, update the lock, and install them
 skillsrc add OWNER/REPO@SKILL                     # add one skill using the skills CLI shorthand
 skillsrc add SOURCE SKILL... --invoke-user-only   # add skills with automatic model invocation disabled
-skillsrc add SOURCE --plugin PLUGIN               # track and install every skill in a declared plugin
-skillsrc add SOURCE SKILL... --plugin PLUGIN      # install only these skills from the declared plugin
 skillsrc add SOURCE --all                         # declare and install every skill discovered in the source
 skillsrc add SOURCE --all --invoke-user-only      # add every discovered skill with model invocation disabled
 skillsrc add SOURCE SKILL... --ref REF            # add from a branch, tag, or full 40-character commit hash
 skillsrc remove SKILL...                          # remove declarations and their owned installations, then sync
-skillsrc remove --plugin PLUGIN                   # remove a configured plugin and its managed installations
 skillsrc sync                                     # restore the declared set at locked Git revisions and local content
 skillsrc outdated [SOURCE|SKILL...]               # report changed remote skills or local sources without modifying files
 skillsrc update [SOURCE|SKILL...]                 # advance matching Git sources, update the lock, and sync installations
@@ -176,6 +173,17 @@ Project `init` creates `skills.toml` in the current directory, not an inferred G
 configuration, initialization directly in `$HOME`, and overwriting an existing manifest. `skillsrc -g init` initializes
 `~/.agents` without creating repository Git ignore metadata. `add` requires an existing selected manifest.
 
+### Discover skills
+
+`discover` lists a Git repository or local directory's skills without changing a manifest, lockfile, or installation.
+It works outside an initialized skillsrc project and accepts `--ref` for Git sources.
+
+```sh
+skillsrc discover owner/repository
+skillsrc discover ../local-skills
+skillsrc discover owner/repository --ref v1.2.0
+```
+
 ### Add and remove skills
 
 A source can be GitHub shorthand, an HTTPS or SSH Git URL, or a relative, absolute, or `~` local path:
@@ -186,11 +194,7 @@ skillsrc add owner/repository one two      # add named skills
 skillsrc add owner/repository@one          # add one skill using shorthand
 skillsrc add owner/repository --all        # add every discovered skill
 skillsrc add ../local-skills private-skill # add from a local directory
-skillsrc add cursor/plugins --plugin pstack # add every declared pstack skill
-skillsrc add cursor/plugins architect --plugin pstack # add one pstack skill
 ```
-
-`--plugin` works for manifest-declared Cursor and Claude plugins. Without skill names it tracks the plugin's full declared membership, so `sync` uses the locked membership and `update` may add or remove skills when the upstream plugin declaration changes. Positional skill names narrow the plugin to a stable subset. `--plugin` cannot be combined with `--all`.
 
 Use `--ref` with a Git source to select a branch, tag, or full commit hash. Use `--invoke-user-only` with named skills
 or `--all` to write them with the `!` shorthand and install them with model invocation disabled. `--all` cannot be

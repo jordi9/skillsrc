@@ -122,6 +122,9 @@ func resolveCLICommand(remaining []string, runtime CLIOptions) (string, []string
 }
 
 func runCLIInvocation(ctx context.Context, invocation cliInvocation, runtime CLIOptions) int {
+	if invocation.command == "discover" {
+		return runDiscoverCLI(ctx, invocation.args[1:], invocation, runtime)
+	}
 	if invocation.autoUserScope {
 		line := "• ~/.agents · using user scope"
 		fmt.Fprintln(runtime.Out, styleUserScope(line, supportsColor(runtime.Out)))
@@ -461,6 +464,88 @@ func styleUserScope(line string, color bool) string {
 	return "\x1b[34m" + line + "\x1b[0m"
 }
 
+func runDiscoverCLI(ctx context.Context, args []string, invocation cliInvocation, runtime CLIOptions) int {
+	parsed, err := parseDiscoverArgs(args)
+	if err != nil {
+		return cliUsageError(runtime.Err, err.Error())
+	}
+	source, err := discoverySource(runtime.WorkingDir, parsed.source, parsed.ref)
+	if err != nil {
+		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
+		return 1
+	}
+	engine := NewEngine(Options{CacheDir: invocation.cacheDir, LockDir: runtime.LockDir, GitBinary: invocation.gitBinary})
+	names, result, err := engine.Discover(ctx, source)
+	if err != nil {
+		printCLIError(runtime.Err, err.Error(), runtime.HomeDir)
+		return 1
+	}
+	printFetches(runtime.Out, result.Fetches, runtime.HomeDir)
+	if len(result.Fetches) > 0 {
+		fmt.Fprintln(runtime.Out)
+	}
+	printAvailability(runtime.Out, displaySource(parsed.source, runtime.HomeDir), names)
+	return 0
+}
+
+type discoverArguments struct {
+	source string
+	ref    string
+}
+
+func parseDiscoverArgs(args []string) (discoverArguments, error) {
+	var parsed discoverArguments
+	var positional []string
+	for index := 0; index < len(args); index++ {
+		switch argument := args[index]; {
+		case argument == "--ref":
+			index++
+			if index >= len(args) {
+				return parsed, errors.New("--ref requires a branch, tag, or full commit hash")
+			}
+			parsed.ref = args[index]
+		case strings.HasPrefix(argument, "--ref="):
+			parsed.ref = strings.TrimPrefix(argument, "--ref=")
+		case strings.HasPrefix(argument, "-"):
+			return parsed, fmt.Errorf("unknown discover option %q", argument)
+		default:
+			positional = append(positional, argument)
+		}
+	}
+	if len(positional) != 1 {
+		return parsed, errors.New("discover requires exactly one source")
+	}
+	parsed.source = positional[0]
+	return parsed, nil
+}
+
+func discoverySource(workingDir, input, ref string) (ManifestSource, error) {
+	resolved, err := resolveLocalPath(workingDir, input)
+	if err != nil {
+		return ManifestSource{}, err
+	}
+	_, statErr := os.Stat(resolved)
+	isLocal := statErr == nil || filepath.IsAbs(input) || input == "." || input == ".." || input == "~" || strings.HasPrefix(input, "./") || strings.HasPrefix(input, "../") || strings.HasPrefix(input, "~/")
+	if !isLocal {
+		return ManifestSource{Repo: input, Ref: ref}, nil
+	}
+	if ref != "" {
+		return ManifestSource{}, &ValidationError{Problem: "local source cannot set ref"}
+	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		return ManifestSource{}, err
+	}
+	return ManifestSource{Path: input, ResolvedPath: absolute}, nil
+}
+
+func printAvailability(output io.Writer, source string, names []string) {
+	fmt.Fprintf(output, "Available skills from %s:\n", source)
+	for _, name := range names {
+		fmt.Fprintf(output, "  • %s\n", name)
+	}
+}
+
 func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
 	parsed, err := parseAddArgs(args)
 	if err != nil {
@@ -470,62 +555,26 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 	if err != nil {
 		return err
 	}
-	source.Plugin = parsed.plugin
-	available, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
+	names, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
 	if err != nil {
 		return err
 	}
-	if parsed.plugin == "" && len(parsed.skills) == 0 && !parsed.all && (len(available.Skills) != 1 || len(available.Plugins) > 0) {
+	if len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
 		printFetches(output, result.Fetches, home)
 		if len(result.Fetches) > 0 {
 			fmt.Fprintln(output)
 		}
-		printAddAvailability(output, displaySource(parsed.source, home), parsed.source, available)
+		printAvailability(output, displaySource(parsed.source, home), names)
 		return nil
 	}
 	printResult(output, "Add complete", result, home, false)
 	return nil
 }
 
-func printAddAvailability(output io.Writer, source, inputSource string, available AddAvailability) {
-	fmt.Fprintf(output, "Available skills from %s:\n", source)
-	if len(available.Plugins) == 0 {
-		for _, name := range available.Skills {
-			fmt.Fprintf(output, "  • %s\n", name)
-		}
-		return
-	}
-	fmt.Fprintln(output, "  Plugins:")
-	for _, plugin := range available.Plugins {
-		fmt.Fprintf(output, "    %s\n", plugin.Name)
-		for _, name := range plugin.Skills {
-			fmt.Fprintf(output, "      • %s\n", name)
-		}
-	}
-	if len(available.Standalone) > 0 {
-		fmt.Fprintln(output, "  Standalone skills:")
-		for _, name := range available.Standalone {
-			fmt.Fprintf(output, "    • %s\n", name)
-		}
-	}
-	plugin := available.Plugins[0]
-	fmt.Fprintln(output, "\nExamples:")
-	fmt.Fprintf(output, "  skillsrc add %s --plugin %s\n", source, plugin.Name)
-	if len(plugin.Skills) == 0 {
-		return
-	}
-	if skillsCLISpecifierPattern.MatchString(inputSource + "@" + plugin.Skills[0]) {
-		fmt.Fprintf(output, "  skillsrc add %s@%s\n", inputSource, plugin.Skills[0])
-		return
-	}
-	fmt.Fprintf(output, "  skillsrc add %s %s\n", source, plugin.Skills[0])
-}
-
 type addArguments struct {
 	source   string
 	skills   []string
 	ref      string
-	plugin   string
 	all      bool
 	userOnly bool
 }
@@ -550,14 +599,8 @@ func parseAddArgs(args []string) (addArguments, error) {
 	if parsed.all && len(parsed.skills) > 0 {
 		return parsed, errors.New("--all cannot be combined with skill names")
 	}
-	if parsed.plugin != "" && parsed.all {
-		return parsed, errors.New("--plugin cannot be combined with --all")
-	}
-	if parsed.plugin != "" && (!skillNamePattern.MatchString(parsed.plugin) || parsed.plugin == "." || parsed.plugin == "..") {
-		return parsed, fmt.Errorf("invalid plugin name %q", parsed.plugin)
-	}
-	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 && parsed.plugin == "" {
-		return parsed, errors.New("--invoke-user-only requires skill names, --plugin, or --all")
+	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 {
+		return parsed, errors.New("--invoke-user-only requires skill names or --all")
 	}
 	return parsed, nil
 }
@@ -572,14 +615,6 @@ func parseAddOptions(args []string) (addArguments, []string, error) {
 			parsed.all = true
 		case argument == "--invoke-user-only":
 			parsed.userOnly = true
-		case argument == "--plugin":
-			index++
-			if index >= len(args) {
-				return parsed, positional, errors.New("--plugin requires a plugin name")
-			}
-			parsed.plugin = args[index]
-		case strings.HasPrefix(argument, "--plugin="):
-			parsed.plugin = strings.TrimPrefix(argument, "--plugin=")
 		case argument == "--ref":
 			index++
 			if index >= len(args) {
@@ -598,41 +633,15 @@ func parseAddOptions(args []string) (addArguments, []string, error) {
 }
 
 func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
-	var plugins, skills []string
-	for index := 0; index < len(args); index++ {
-		switch argument := args[index]; {
-		case argument == "--plugin":
-			index++
-			if index >= len(args) {
-				return errors.New("--plugin requires a plugin name")
-			}
-			plugins = append(plugins, args[index])
-		case strings.HasPrefix(argument, "--plugin="):
-			plugins = append(plugins, strings.TrimPrefix(argument, "--plugin="))
-		case strings.HasPrefix(argument, "-"):
+	if len(args) == 0 {
+		return errors.New("remove requires at least one skill name")
+	}
+	for _, argument := range args {
+		if strings.HasPrefix(argument, "-") {
 			return fmt.Errorf("unknown remove option %q", argument)
-		default:
-			skills = append(skills, argument)
 		}
 	}
-	for _, plugin := range plugins {
-		if !skillNamePattern.MatchString(plugin) || plugin == "." || plugin == ".." {
-			return fmt.Errorf("invalid plugin name %q", plugin)
-		}
-	}
-	if len(plugins) > 0 && len(skills) > 0 {
-		return errors.New("--plugin cannot be combined with skill names")
-	}
-	if len(plugins) == 0 && len(skills) == 0 {
-		return errors.New("remove requires at least one skill name or --plugin")
-	}
-	var result Result
-	var err error
-	if len(plugins) > 0 {
-		result, err = engine.RemovePlugins(ctx, plugins)
-	} else {
-		result, err = engine.Remove(ctx, skills)
-	}
+	result, err := engine.Remove(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -939,8 +948,9 @@ const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
 var cliCommandSpecs = []cliCommandSpec{
 	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
-	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. With --plugin, omit to track the whole plugin.", "--all                 Add every discovered skill.\n--plugin NAME         Select a manifest-declared plugin.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
-	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove [--plugin NAME | <SKILL>...]", "<SKILL>...  One or more skill names.", "--plugin NAME  Remove a whole configured plugin.", []string{"rm"}},
+	{"discover", "List skills found in a Git repository or local directory", "skillsrc [OPTIONS] discover [OPTIONS] <SOURCE>", "<SOURCE>  Repository or local directory.", "--ref REF  Git branch, tag, or full commit hash.", nil},
+	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
+	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
 	{"outdated", "Show remote skill updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
 	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--all   Include standalone unmanaged skills.\n--json  Print JSON.", []string{"ls"}},

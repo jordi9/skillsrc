@@ -23,151 +23,45 @@ type DiscoveredSkill struct {
 	Path string
 }
 
-// SkillDiscovery contains the globally selectable skills and the exact skills
-// exposed by each named marketplace plugin.
-type SkillDiscovery struct {
-	Global  map[string]DiscoveredSkill
-	Plugins map[string]map[string]DiscoveredSkill
-}
-
 type discoveredSkillCandidate struct {
 	DiscoveredSkill
-	priority    int
-	plugin      string
-	marketplace bool
-	hash        string
+	priority int
+	hash     string
 }
 
 type skillCandidatePath struct {
 	path        string
 	priority    int
-	plugin      string
 	marketplace bool
 }
 
-// DiscoverSkillSources discovers both global skills and named plugin skills.
-func DiscoverSkillSources(root string) (SkillDiscovery, error) {
+func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 	discovered, err := discoverSkillCandidates(root)
 	if err != nil {
-		return SkillDiscovery{}, err
+		return nil, err
 	}
-	result := SkillDiscovery{
-		Global:  make(map[string]DiscoveredSkill),
-		Plugins: make(map[string]map[string]DiscoveredSkill),
-	}
-	globalCandidates := make(map[string]discoveredSkillCandidate)
-	pluginCandidates := make(map[string]map[string]discoveredSkillCandidate)
+	result := make(map[string]DiscoveredSkill)
+	selected := make(map[string]discoveredSkillCandidate)
 	for _, skill := range discovered {
-		if skill.plugin != "" {
-			if pluginCandidates[skill.plugin] == nil {
-				pluginCandidates[skill.plugin] = make(map[string]discoveredSkillCandidate)
-				result.Plugins[skill.plugin] = make(map[string]DiscoveredSkill)
-			}
-			previous, exists := pluginCandidates[skill.plugin][skill.Name]
-			if exists && previous.Path != skill.Path && previous.hash != skill.hash {
-				return SkillDiscovery{}, ambiguousSkill(skill.Name, previous.Path, skill.Path)
-			}
-			if !exists {
-				pluginCandidates[skill.plugin][skill.Name] = skill
-				result.Plugins[skill.plugin][skill.Name] = skill.DiscoveredSkill
-			}
-		}
-
-		previous, exists := globalCandidates[skill.Name]
+		previous, exists := selected[skill.Name]
 		if !exists || skill.priority < previous.priority {
-			globalCandidates[skill.Name] = skill
-			result.Global[skill.Name] = skill.DiscoveredSkill
+			selected[skill.Name] = skill
+			result[skill.Name] = skill.DiscoveredSkill
 			continue
 		}
 		if skill.priority > previous.priority || previous.Path == skill.Path {
 			continue
 		}
-		previousDedicated := previous.marketplace && previous.plugin == previous.Name
-		skillDedicated := skill.marketplace && skill.plugin == skill.Name
-		if previousDedicated != skillDedicated {
-			if skillDedicated {
-				globalCandidates[skill.Name] = skill
-				result.Global[skill.Name] = skill.DiscoveredSkill
-			}
-			continue
-		}
 		if previous.hash == skill.hash {
 			continue
 		}
-		return SkillDiscovery{}, ambiguousSkill(skill.Name, previous.Path, skill.Path)
+		return nil, ambiguousSkill(skill.Name, previous.Path, skill.Path)
 	}
 	return result, nil
 }
 
 func ambiguousSkill(name, first, second string) error {
 	return &ValidationError{Problem: fmt.Sprintf("ambiguous skill %q at %q and %q", name, first, second)}
-}
-
-func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
-	discovery, err := DiscoverSkillSources(root)
-	if err != nil {
-		return nil, err
-	}
-	return discovery.Global, nil
-}
-
-// DiscoverPluginSkills returns the exact skills belonging to pluginName. Global
-// name conflicts in other plugins do not prevent an exact plugin selection.
-func DiscoverPluginSkills(root, pluginName string) (map[string]DiscoveredSkill, error) {
-	discovered, err := discoverSkillCandidates(root)
-	if err != nil {
-		return nil, err
-	}
-	skills := make(map[string]DiscoveredSkill)
-	selected := make(map[string]discoveredSkillCandidate)
-	foundPlugin := false
-	for _, skill := range discovered {
-		if skill.plugin != pluginName {
-			continue
-		}
-		foundPlugin = true
-		previous, exists := selected[skill.Name]
-		if exists && previous.Path != skill.Path && previous.hash != skill.hash {
-			return nil, ambiguousSkill(skill.Name, previous.Path, skill.Path)
-		}
-		if !exists {
-			selected[skill.Name] = skill
-			skills[skill.Name] = skill.DiscoveredSkill
-		}
-	}
-	if !foundPlugin {
-		return nil, &ValidationError{Problem: fmt.Sprintf("plugin %q was not found", pluginName)}
-	}
-	return skills, nil
-}
-
-// DiscoverPlugins returns all named plugins and their exact skill maps. Global
-// name conflicts between different plugins do not affect this representation.
-func DiscoverPlugins(root string) (map[string]map[string]DiscoveredSkill, error) {
-	discovered, err := discoverSkillCandidates(root)
-	if err != nil {
-		return nil, err
-	}
-	plugins := make(map[string]map[string]DiscoveredSkill)
-	selected := make(map[string]map[string]discoveredSkillCandidate)
-	for _, skill := range discovered {
-		if skill.plugin == "" {
-			continue
-		}
-		if plugins[skill.plugin] == nil {
-			plugins[skill.plugin] = make(map[string]DiscoveredSkill)
-			selected[skill.plugin] = make(map[string]discoveredSkillCandidate)
-		}
-		previous, exists := selected[skill.plugin][skill.Name]
-		if exists && previous.Path != skill.Path && previous.hash != skill.hash {
-			return nil, ambiguousSkill(skill.Name, previous.Path, skill.Path)
-		}
-		if !exists {
-			selected[skill.plugin][skill.Name] = skill
-			plugins[skill.plugin][skill.Name] = skill.DiscoveredSkill
-		}
-	}
-	return plugins, nil
 }
 
 func discoverSkillCandidates(root string) ([]discoveredSkillCandidate, error) {
@@ -244,18 +138,15 @@ type marketplaceManifest struct {
 }
 
 type marketplacePlugin struct {
-	Name   string          `json:"name"`
 	Source json.RawMessage `json:"source"`
 	Skills []string        `json:"skills"`
 }
 
 type claudePluginManifest struct {
-	Name   string   `json:"name"`
 	Skills []string `json:"skills"`
 }
 
 type cursorPluginManifest struct {
-	Name   string          `json:"name"`
 	Skills json.RawMessage `json:"skills"`
 }
 
@@ -287,7 +178,7 @@ func collectClaudePluginSkillPaths(root string, priority int) ([]skillCandidateP
 					continue
 				}
 			}
-			paths, err := collectClaudeManifestSkills(root, pluginBase, plugin.Skills, priority, plugin.Name, true)
+			paths, err := collectClaudeManifestSkills(root, pluginBase, plugin.Skills, priority, true)
 			if err != nil {
 				return nil, err
 			}
@@ -297,7 +188,7 @@ func collectClaudePluginSkillPaths(root string, priority int) ([]skillCandidateP
 
 	var plugin claudePluginManifest
 	if readJSONFile(filepath.Join(root, claudePluginManifestDir, "plugin.json"), &plugin) {
-		paths, err := collectClaudeManifestSkills(root, root, plugin.Skills, priority, plugin.Name, false)
+		paths, err := collectClaudeManifestSkills(root, root, plugin.Skills, priority, false)
 		if err != nil {
 			return nil, err
 		}
@@ -306,15 +197,15 @@ func collectClaudePluginSkillPaths(root string, priority int) ([]skillCandidateP
 	return candidates, nil
 }
 
-func collectClaudeManifestSkills(root, pluginBase string, declared []string, priority int, plugin string, marketplace bool) ([]skillCandidatePath, error) {
+func collectClaudeManifestSkills(root, pluginBase string, declared []string, priority int, marketplace bool) ([]skillCandidatePath, error) {
 	var candidates []skillCandidatePath
 	for _, skill := range declared {
 		path, ok := safeManifestPath(root, pluginBase, skill, false)
 		if ok && isRegularFile(filepath.Join(path, "SKILL.md")) {
-			candidates = appendCandidatePath(candidates, skillCandidatePath{path: path, priority: priority, plugin: plugin, marketplace: marketplace})
+			candidates = appendCandidatePath(candidates, skillCandidatePath{path: path, priority: priority, marketplace: marketplace})
 		}
 	}
-	paths, err := collectSkillDirectory(filepath.Join(pluginBase, "skills"), priority, plugin, marketplace)
+	paths, err := collectSkillDirectory(filepath.Join(pluginBase, "skills"), priority, marketplace)
 	if err != nil {
 		return nil, fmt.Errorf("scan Claude plugin skills in %q: %w", pluginBase, err)
 	}
@@ -341,11 +232,7 @@ func collectCursorPluginSkillPaths(root string, priority int) ([]skillCandidateP
 			if !readJSONFile(filepath.Join(pluginBase, ".cursor-plugin", "plugin.json"), &manifest) {
 				continue
 			}
-			pluginName := listed.Name
-			if pluginName == "" {
-				pluginName = manifest.Name
-			}
-			paths, err := collectCursorManifestSkills(root, pluginBase, manifest, priority, pluginName)
+			paths, err := collectCursorManifestSkills(root, pluginBase, manifest, priority)
 			if err != nil {
 				return nil, err
 			}
@@ -355,7 +242,7 @@ func collectCursorPluginSkillPaths(root string, priority int) ([]skillCandidateP
 
 	var rootPlugin cursorPluginManifest
 	if readJSONFile(filepath.Join(root, ".cursor-plugin", "plugin.json"), &rootPlugin) {
-		paths, err := collectCursorManifestSkills(root, root, rootPlugin, priority, rootPlugin.Name)
+		paths, err := collectCursorManifestSkills(root, root, rootPlugin, priority)
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +253,7 @@ func collectCursorPluginSkillPaths(root string, priority int) ([]skillCandidateP
 	return candidates, nil
 }
 
-func collectCursorManifestSkills(root, pluginBase string, manifest cursorPluginManifest, priority int, pluginName string) ([]skillCandidatePath, error) {
+func collectCursorManifestSkills(root, pluginBase string, manifest cursorPluginManifest, priority int) ([]skillCandidatePath, error) {
 	declared, valid := parseManifestStringList(manifest.Skills)
 	if !valid {
 		return nil, nil
@@ -380,7 +267,7 @@ func collectCursorManifestSkills(root, pluginBase string, manifest cursorPluginM
 		if !ok {
 			continue
 		}
-		paths, err := collectSkillDirectory(dir, priority, pluginName, true)
+		paths, err := collectSkillDirectory(dir, priority, true)
 		if err != nil {
 			return nil, fmt.Errorf("scan Cursor plugin skills in %q: %w", pluginBase, err)
 		}
@@ -404,7 +291,7 @@ func parseManifestStringList(raw json.RawMessage) ([]string, bool) {
 	return nil, false
 }
 
-func collectSkillDirectory(dir string, priority int, plugin string, marketplace bool) ([]skillCandidatePath, error) {
+func collectSkillDirectory(dir string, priority int, marketplace bool) ([]skillCandidatePath, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -416,7 +303,7 @@ func collectSkillDirectory(dir string, priority int, plugin string, marketplace 
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() && isRegularFile(filepath.Join(path, "SKILL.md")) {
-			candidates = append(candidates, skillCandidatePath{path: path, priority: priority, plugin: plugin, marketplace: marketplace})
+			candidates = append(candidates, skillCandidatePath{path: path, priority: priority, marketplace: marketplace})
 		}
 	}
 	return candidates, nil
@@ -424,7 +311,7 @@ func collectSkillDirectory(dir string, priority int, plugin string, marketplace 
 
 func appendCandidatePath(candidates []skillCandidatePath, addition skillCandidatePath) []skillCandidatePath {
 	for _, candidate := range candidates {
-		if filepath.Clean(candidate.path) == filepath.Clean(addition.path) && candidate.plugin == addition.plugin {
+		if filepath.Clean(candidate.path) == filepath.Clean(addition.path) {
 			return candidates
 		}
 	}
@@ -507,8 +394,6 @@ func materializeSkillCandidates(root string, candidates []skillCandidatePath) ([
 		discovered = append(discovered, discoveredSkillCandidate{
 			DiscoveredSkill: DiscoveredSkill{Name: name, Path: filepath.ToSlash(relative)},
 			priority:        candidate.priority,
-			plugin:          candidate.plugin,
-			marketplace:     candidate.marketplace,
 			hash:            hash,
 		})
 	}

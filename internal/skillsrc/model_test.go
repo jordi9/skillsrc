@@ -58,27 +58,46 @@ skills=["../one"]
 	}
 }
 
-func TestLoadManifestAcceptsPluginOnlySourceAndRoundTripsPlugin(t *testing.T) {
+func TestLoadManifestRejectsPluginAndEmptySkillSelection(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "skills.toml")
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"plugin key", "version=1\n[[sources]]\nrepo=\"cursor/plugins\"\nplugin=\"pstack\"\nskills=[\"one\"]\n", "unknown manifest key"},
+		{"empty skills", "version=1\n[[sources]]\nrepo=\"owner/repo\"\n", "must select at least one skill"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "skills.toml")
+			writeTestFile(t, path, tt.body)
+			_, err := LoadManifest(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadManifest() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadLockRejectsPluginKey(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "skills.lock")
 	writeTestFile(t, path, `version = 1
 [[sources]]
-repo = "cursor/plugins"
+kind = "git"
+identity = "github.com/owner/repo"
+repo = "owner/repo"
 plugin = "pstack"
+commit = "0123456789abcdef0123456789abcdef01234567"
+[[sources.skills]]
+name = "one"
+path = "skills/one"
+hash = "sha256:one"
 `)
-	manifest, err := LoadManifest(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := manifest.Sources[0].Plugin, "pstack"; got != want {
-		t.Fatalf("Plugin = %q, want %q", got, want)
-	}
-	encoded, err := EncodeManifest(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `plugin = "pstack"`) || strings.Contains(string(encoded), "skills =") {
-		t.Fatalf("encoded manifest does not preserve plugin-only selection:\n%s", encoded)
+	_, err := LoadLock(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown lock key") {
+		t.Fatalf("LoadLock() error = %v, want unknown lock key", err)
 	}
 }
 
