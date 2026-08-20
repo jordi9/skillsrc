@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -208,6 +209,32 @@ func TestStyleCommandSuggestions(t *testing.T) {
 	)
 }
 
+func TestParseAddArgsAcceptsPluginSelection(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := parseAddArgs([]string{"cursor/plugins", "--plugin", "pstack"})
+	require.NoError(t, err)
+	assert.Equal(t, "cursor/plugins", parsed.source)
+	assert.Equal(t, "pstack", parsed.plugin)
+	assert.Empty(t, parsed.skills)
+}
+
+func TestParseAddArgsAcceptsPluginSkillSubset(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := parseAddArgs([]string{"cursor/plugins", "architect", "--plugin=pstack"})
+	require.NoError(t, err)
+	assert.Equal(t, "pstack", parsed.plugin)
+	assert.Equal(t, []string{"architect"}, parsed.skills)
+}
+
+func TestParseAddArgsRejectsPluginWithAll(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseAddArgs([]string{"cursor/plugins", "--plugin", "pstack", "--all"})
+	assert.EqualError(t, err, "--plugin cannot be combined with --all")
+}
+
 func TestParseAddArgsAcceptsSkillsCLISpecifier(t *testing.T) {
 	t.Parallel()
 
@@ -238,7 +265,7 @@ func TestParseAddArgsRejectsInvokeUserOnlyWithoutSkills(t *testing.T) {
 	t.Parallel()
 
 	_, err := parseAddArgs([]string{"owner/repo", "--invoke-user-only"})
-	assert.EqualError(t, err, "--invoke-user-only requires skill names or --all")
+	assert.EqualError(t, err, "--invoke-user-only requires skill names, --plugin, or --all")
 }
 
 func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
@@ -258,6 +285,185 @@ func TestCLIAddUserOnlyWritesOverrideAndInstallsManualSkill(t *testing.T) {
 	installed, err := os.ReadFile(filepath.Join(options.TargetDir, "one", "SKILL.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(installed), "disable-model-invocation: true")
+}
+
+func TestCLIRemoveRejectsEmptyPluginWithoutRemovingOrdinarySource(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"remove", "--plugin="}, options, &output, &errorOutput))
+	assert.Contains(t, errorOutput.String(), `invalid plugin name ""`)
+	assert.FileExists(t, filepath.Join(options.TargetDir, "one", "SKILL.md"))
+}
+
+func TestCLIAddCursorPluginInstallsDeclaredSkillsAndTracksMembership(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "architecture")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "arena"), "arena", "parallel")
+	makeSkill(t, filepath.Join(local, "pstack", "automations", "hidden", "skills", "internal"), "internal", "not declared")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	assert.FileExists(t, filepath.Join(options.TargetDir, "architect", "SKILL.md"))
+	assert.FileExists(t, filepath.Join(options.TargetDir, "arena", "SKILL.md"))
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "internal"))
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	require.Len(t, manifest.Sources, 1)
+	assert.Equal(t, "pstack", manifest.Sources[0].Plugin)
+	assert.Empty(t, manifest.Sources[0].Skills)
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	require.Len(t, lock.Sources, 1)
+	assert.Equal(t, "pstack", lock.Sources[0].Plugin)
+	assert.ElementsMatch(t, []string{"pstack/skills/architect", "pstack/skills/arena"}, []string{lock.Sources[0].Skills[0].Path, lock.Sources[0].Skills[1].Path})
+
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "teach"), "teach", "new member")
+	_, err = NewEngine(options).Sync(context.Background())
+	require.NoError(t, err)
+	assert.FileExists(t, filepath.Join(options.TargetDir, "teach", "SKILL.md"))
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "architect"))
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "arena"))
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "teach"))
+	manifest, err = LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Sources)
+}
+
+func TestCLIAddClaudeMarketplacePlugin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	writeTestFile(t, filepath.Join(local, ".claude-plugin", "marketplace.json"), `{"metadata":{"pluginRoot":"./plugins"},"plugins":[{"name":"review-kit","source":"./review-kit"}]}`)
+	makeSkill(t, filepath.Join(local, "plugins", "review-kit", "skills", "review"), "review", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "--plugin", "review-kit"}, options, &output, &errorOutput), errorOutput.String())
+	assert.FileExists(t, filepath.Join(options.TargetDir, "review", "SKILL.md"))
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	require.Len(t, lock.Sources, 1)
+	assert.Equal(t, "review-kit", lock.Sources[0].Plugin)
+	assert.Equal(t, "plugins/review-kit/skills/review", lock.Sources[0].Skills[0].Path)
+}
+
+func TestCLIAddCursorPluginExpandsSubsetToWholePlugin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "architecture")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "arena"), "arena", "parallel")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "architect", "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Sources[0].Skills)
+	assert.FileExists(t, filepath.Join(options.TargetDir, "architect", "SKILL.md"))
+	assert.FileExists(t, filepath.Join(options.TargetDir, "arena", "SKILL.md"))
+}
+
+func TestCLIAddCursorPluginNarrowsExistingWholePlugin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "architecture")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "arena"), "arena", "parallel")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "architect", "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"architect"}, manifest.Sources[0].Skills)
+	assert.FileExists(t, filepath.Join(options.TargetDir, "architect", "SKILL.md"))
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "arena"))
+}
+
+func TestCLIAddWholePluginRejectsSkillOwnedByAnotherSource(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "plugin")
+	standalone := filepath.Join(root, "standalone")
+	makeSkill(t, filepath.Join(standalone, "architect"), "architect", "standalone")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", standalone, "architect"}, options, &output, &errorOutput), errorOutput.String())
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 1, runCLIResolved(context.Background(), []string{"add", local, "--plugin", "pstack"}, options, &output, &errorOutput))
+	assert.Contains(t, errorOutput.String(), `skill "architect" is already declared by another source`)
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	require.Len(t, manifest.Sources, 1)
+	assert.Empty(t, manifest.Sources[0].Plugin)
+}
+
+func TestCLIAddCursorPluginCanSelectSkillSubset(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "architecture")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "arena"), "arena", "parallel")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "architect", "--plugin", "pstack"}, options, &output, &errorOutput), errorOutput.String())
+	assert.FileExists(t, filepath.Join(options.TargetDir, "architect", "SKILL.md"))
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "arena"))
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, "pstack", manifest.Sources[0].Plugin)
+	assert.Equal(t, []string{"architect"}, manifest.Sources[0].Skills)
+}
+
+func makeCursorPluginMarketplace(t *testing.T, root, plugin string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), fmt.Sprintf(`{"plugins":[{"name":%q,"source":%q}]}`, plugin, plugin))
+	writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), fmt.Sprintf(`{"name":%q,"skills":"./skills/"}`, plugin))
 }
 
 func TestCLIAddSourceInstallsOnlyAvailableSkill(t *testing.T) {
@@ -732,8 +938,8 @@ func TestCLIHelpInventoriesEveryCommandFlag(t *testing.T) {
 	flags := map[string][]string{
 		"init":     nil,
 		"sync":     nil,
-		"add":      {"--all", "--ref", "--invoke-user-only"},
-		"remove":   nil,
+		"add":      {"--all", "--plugin", "--ref", "--invoke-user-only"},
+		"remove":   {"--plugin"},
 		"outdated": nil,
 		"update":   nil,
 		"list":     {"--all", "--json"},
@@ -767,8 +973,8 @@ func TestCLIHelpDocumentsAddOptionsAndUnknownCommandsRemainErrors(t *testing.T) 
 	var output, errorOutput bytes.Buffer
 	runtime.Out, runtime.Err = &output, &errorOutput
 	assert.Equal(t, 0, RunCLI(context.Background(), []string{"help", "add"}, runtime))
-	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.\n")
-	for _, option := range []string{"--all", "--ref", "--invoke-user-only"} {
+	assert.Contains(t, output.String(), "Arguments:\n  <SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n  [SKILL...]   Skill names to add. With --plugin, omit to track the whole plugin.\n")
+	for _, option := range []string{"--all", "--plugin", "--ref", "--invoke-user-only"} {
 		assert.Contains(t, output.String(), "  "+option)
 	}
 	assert.Empty(t, errorOutput.String())

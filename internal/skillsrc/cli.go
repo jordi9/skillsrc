@@ -470,11 +470,12 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 	if err != nil {
 		return err
 	}
+	source.Plugin = parsed.plugin
 	names, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
 	if err != nil {
 		return err
 	}
-	if len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
+	if parsed.plugin == "" && len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
 		printFetches(output, result.Fetches, home)
 		if len(result.Fetches) > 0 {
 			fmt.Fprintln(output)
@@ -493,6 +494,7 @@ type addArguments struct {
 	source   string
 	skills   []string
 	ref      string
+	plugin   string
 	all      bool
 	userOnly bool
 }
@@ -517,8 +519,14 @@ func parseAddArgs(args []string) (addArguments, error) {
 	if parsed.all && len(parsed.skills) > 0 {
 		return parsed, errors.New("--all cannot be combined with skill names")
 	}
-	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 {
-		return parsed, errors.New("--invoke-user-only requires skill names or --all")
+	if parsed.plugin != "" && parsed.all {
+		return parsed, errors.New("--plugin cannot be combined with --all")
+	}
+	if parsed.plugin != "" && (!skillNamePattern.MatchString(parsed.plugin) || parsed.plugin == "." || parsed.plugin == "..") {
+		return parsed, fmt.Errorf("invalid plugin name %q", parsed.plugin)
+	}
+	if parsed.userOnly && !parsed.all && len(parsed.skills) == 0 && parsed.plugin == "" {
+		return parsed, errors.New("--invoke-user-only requires skill names, --plugin, or --all")
 	}
 	return parsed, nil
 }
@@ -533,6 +541,14 @@ func parseAddOptions(args []string) (addArguments, []string, error) {
 			parsed.all = true
 		case argument == "--invoke-user-only":
 			parsed.userOnly = true
+		case argument == "--plugin":
+			index++
+			if index >= len(args) {
+				return parsed, positional, errors.New("--plugin requires a plugin name")
+			}
+			parsed.plugin = args[index]
+		case strings.HasPrefix(argument, "--plugin="):
+			parsed.plugin = strings.TrimPrefix(argument, "--plugin=")
 		case argument == "--ref":
 			index++
 			if index >= len(args) {
@@ -551,10 +567,41 @@ func parseAddOptions(args []string) (addArguments, []string, error) {
 }
 
 func runRemoveCLI(ctx context.Context, engine *Engine, args []string, output io.Writer, home string) error {
-	if len(args) == 0 {
-		return errors.New("remove requires at least one skill name")
+	var plugins, skills []string
+	for index := 0; index < len(args); index++ {
+		switch argument := args[index]; {
+		case argument == "--plugin":
+			index++
+			if index >= len(args) {
+				return errors.New("--plugin requires a plugin name")
+			}
+			plugins = append(plugins, args[index])
+		case strings.HasPrefix(argument, "--plugin="):
+			plugins = append(plugins, strings.TrimPrefix(argument, "--plugin="))
+		case strings.HasPrefix(argument, "-"):
+			return fmt.Errorf("unknown remove option %q", argument)
+		default:
+			skills = append(skills, argument)
+		}
 	}
-	result, err := engine.Remove(ctx, args)
+	for _, plugin := range plugins {
+		if !skillNamePattern.MatchString(plugin) || plugin == "." || plugin == ".." {
+			return fmt.Errorf("invalid plugin name %q", plugin)
+		}
+	}
+	if len(plugins) > 0 && len(skills) > 0 {
+		return errors.New("--plugin cannot be combined with skill names")
+	}
+	if len(plugins) == 0 && len(skills) == 0 {
+		return errors.New("remove requires at least one skill name or --plugin")
+	}
+	var result Result
+	var err error
+	if len(plugins) > 0 {
+		result, err = engine.RemovePlugins(ctx, plugins)
+	} else {
+		result, err = engine.Remove(ctx, skills)
+	}
 	if err != nil {
 		return err
 	}
@@ -861,8 +908,8 @@ const globalOptionsHelp = `  -g, --global       Use ~/.agents/skills.toml
 var cliCommandSpecs = []cliCommandSpec{
 	{"init", "Initialize a manifest", "skillsrc [OPTIONS] init", "None.", "None.", nil},
 	{"sync", "Install the exact declared and locked skill set", "skillsrc [OPTIONS] sync", "None.", "None.", nil},
-	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. Omit to install the sole skill or list multiple choices.", "--all                 Add every discovered skill.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
-	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove <SKILL>...", "<SKILL>...  One or more skill names.", "None.", []string{"rm"}},
+	{"add", "Add skills from a Git repository or local directory", "skillsrc [OPTIONS] add [OPTIONS] <SOURCE> [SKILL...]", "<SOURCE>     Repository or local directory. SOURCE@SKILL selects one skill.\n[SKILL...]   Skill names to add. With --plugin, omit to track the whole plugin.", "--all                 Add every discovered skill.\n--plugin NAME         Select a manifest-declared plugin.\n--ref REF             Git branch, tag, or full commit hash.\n--invoke-user-only    Disable model invocation for added skills.", nil},
+	{"remove", "Remove skills and their managed installations", "skillsrc [OPTIONS] remove [--plugin NAME | <SKILL>...]", "<SKILL>...  One or more skill names.", "--plugin NAME  Remove a whole configured plugin.", []string{"rm"}},
 	{"outdated", "Show remote skill updates and local changes without changing project files", "skillsrc [OPTIONS] outdated [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to check; defaults to all sources.", "None.", nil},
 	{"update", "Update Git revisions, then sync", "skillsrc [OPTIONS] update [SOURCE|SKILL...]", "[SOURCE|SKILL...]  Sources or skill names to update; defaults to all sources.", "None.", nil},
 	{"list", "Show configured skills and installation state", "skillsrc [OPTIONS] list [OPTIONS]", "None.", "--all   Include standalone unmanaged skills.\n--json  Print JSON.", []string{"ls"}},

@@ -65,6 +65,197 @@ func TestDiscoverSkillsUsesClaudeMarketplacePluginLocations(t *testing.T) {
 	if _, ok := found["ignored"]; ok {
 		t.Fatalf("skill from undeclared plugin was discovered: %#v", found)
 	}
+	pluginSkills, err := DiscoverPluginSkills(root, "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pluginSkills["explicit"].Path; got != "plugins/two/custom/explicit" {
+		t.Fatalf("Claude plugin skill path = %q", got)
+	}
+}
+
+func TestDiscoverPluginSkillsUsesDirectorySlugForInvalidMarketplaceName(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{"plugins":[{"name":"pstack","source":"pstack"}]}`)
+	writeTestFile(t, filepath.Join(root, "pstack", ".cursor-plugin", "plugin.json"), `{"name":"pstack","skills":"./skills/"}`)
+	makeSkill(t, filepath.Join(root, "pstack", "skills", "poteto-mode"), "Poteto Mode", "body")
+
+	found, err := DiscoverPluginSkills(root, "pstack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["poteto-mode"].Path; got != "pstack/skills/poteto-mode" {
+		t.Fatalf("poteto-mode path = %q", got)
+	}
+}
+
+func TestDiscoverSkillSourcesUsesCursorMarketplaceAndDeclaredDirectories(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
+		"plugins": [{"name": "pstack", "source": "pstack"}]
+	}`)
+	writeTestFile(t, filepath.Join(root, "pstack", ".cursor-plugin", "plugin.json"), `{
+		"name": "pstack", "skills": "./skill-library/"
+	}`)
+	makeSkill(t, filepath.Join(root, "pstack", "skill-library", "review"), "review", "cursor")
+	makeSkill(t, filepath.Join(root, "pstack", "skill-library", "group", "nested"), "nested", "ignored")
+	makeSkill(t, filepath.Join(root, "pstack", "skills", "undeclared"), "undeclared", "ignored")
+
+	discovery, err := DiscoverSkillSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := discovery.Global["review"].Path; got != "pstack/skill-library/review" {
+		t.Fatalf("global review path = %q", got)
+	}
+	if got := discovery.Plugins["pstack"]["review"].Path; got != "pstack/skill-library/review" {
+		t.Fatalf("plugin review path = %q", got)
+	}
+	if _, ok := discovery.Global["nested"]; ok {
+		t.Fatal("nested skill in a declared directory was discovered")
+	}
+	if _, ok := discovery.Global["undeclared"]; ok {
+		t.Fatal("conventional skills were used despite an explicit Cursor declaration")
+	}
+}
+
+func TestDiscoverPluginSkillsRequiresCursorPluginManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{"plugins":[{"name":"missing-manifest","source":"plugin"}]}`)
+	makeSkill(t, filepath.Join(root, "plugin", "skills", "ignored"), "ignored", "body")
+
+	_, err := DiscoverPluginSkills(root, "missing-manifest")
+	if err == nil || !strings.Contains(err.Error(), `plugin "missing-manifest" was not found`) {
+		t.Fatalf("DiscoverPluginSkills() error = %v", err)
+	}
+}
+
+func TestDiscoverPluginSkillsUsesRootCursorPluginManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "plugin.json"), `{"name":"root-plugin","skills":"./skills/"}`)
+	makeSkill(t, filepath.Join(root, "skills", "root-skill"), "root-skill", "body")
+
+	found, err := DiscoverPluginSkills(root, "root-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["root-skill"].Path; got != "skills/root-skill" {
+		t.Fatalf("root-skill path = %q", got)
+	}
+}
+
+func TestDiscoverSkillSourcesCursorSupportsStringArraysAndSafeBareSources(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), fmt.Sprintf(`{
+		"plugins": [
+			{"name":"bare", "source":"bare"},
+			{"name":"dot", "source":"./dot"},
+			{"name":"absolute", "source":%q},
+			{"name":"escape", "source":"../escape"},
+			{"name":"remote", "source":"https://example.com/plugin"},
+			{"name":"object", "source":{"url":"remote"}}
+		]
+	}`, filepath.ToSlash(outside)))
+	for _, plugin := range []string{"bare", "dot"} {
+		writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), `{"skills":["./one", "./two"]}`)
+		makeSkill(t, filepath.Join(root, plugin, "one", "first"), plugin+"-first", "one")
+		makeSkill(t, filepath.Join(root, plugin, "two", "second"), plugin+"-second", "two")
+	}
+	makeSkill(t, filepath.Join(outside, "skills", "unsafe"), "unsafe", "outside")
+
+	discovery, err := DiscoverSkillSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, plugin := range []string{"bare", "dot"} {
+		if len(discovery.Plugins[plugin]) != 2 {
+			t.Errorf("plugin %q skills = %#v", plugin, discovery.Plugins[plugin])
+		}
+	}
+	for _, plugin := range []string{"absolute", "escape", "remote", "object"} {
+		if _, ok := discovery.Plugins[plugin]; ok {
+			t.Errorf("unsafe plugin source %q was discovered", plugin)
+		}
+	}
+}
+
+func TestDiscoverPluginSkillsKeepsPluginSpecificDuplicateSelections(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
+		"plugins":[{"name":"one","source":"one"},{"name":"two","source":"two"}]
+	}`)
+	for _, plugin := range []string{"one", "two"} {
+		writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), `{}`)
+		makeSkill(t, filepath.Join(root, plugin, "skills", "shared"), "shared", plugin)
+	}
+
+	for _, plugin := range []string{"one", "two"} {
+		selected, err := DiscoverPluginSkills(root, plugin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := plugin + "/skills/shared"
+		if got := selected["shared"].Path; got != want {
+			t.Fatalf("plugin %s shared path = %q, want %q", plugin, got, want)
+		}
+	}
+	plugins, err := DiscoverPlugins(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plugins) != 2 {
+		t.Fatalf("plugins = %#v", plugins)
+	}
+	if _, err := DiscoverSkills(root); err == nil || !strings.Contains(err.Error(), `ambiguous skill "shared"`) {
+		t.Fatalf("global discovery error = %v", err)
+	}
+}
+
+func TestDiscoverSkillsPrefersDedicatedMarketplacePluginForDuplicate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
+		"plugins":[{"name":"bundle","source":"bundle"},{"name":"shared","source":"dedicated"}]
+	}`)
+	for _, plugin := range []string{"bundle", "dedicated"} {
+		writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), `{}`)
+		makeSkill(t, filepath.Join(root, plugin, "skills", "shared"), "shared", plugin)
+	}
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["shared"].Path; got != "dedicated/skills/shared" {
+		t.Fatalf("shared path = %q, want dedicated plugin", got)
+	}
+}
+
+func TestDiscoverSkillsCollapsesIdenticalMarketplaceDuplicates(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
+		"plugins":[{"name":"one","source":"one"},{"name":"two","source":"two"}]
+	}`)
+	for _, plugin := range []string{"one", "two"} {
+		writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), `{}`)
+		makeSkill(t, filepath.Join(root, plugin, "skills", "shared"), "shared", "identical")
+	}
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["shared"].Path; got != "one/skills/shared" {
+		t.Fatalf("collapsed shared path = %q", got)
+	}
 }
 
 func TestDiscoverSkillsUsesRootClaudePluginManifest(t *testing.T) {

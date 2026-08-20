@@ -65,7 +65,18 @@ func (engine *Engine) list(ctx context.Context, includeUnmanaged bool) ([]SkillS
 			}
 			identity = repository.Identity
 		}
-		for _, name := range source.Skills {
+		names := append([]string(nil), source.Skills...)
+		if source.Plugin != "" && len(names) == 0 {
+			for _, lockedSource := range lock.Sources {
+				if lockSourceMatchesManifest(lockedSource, kind, identity, source) {
+					for _, skill := range lockedSource.Skills {
+						names = append(names, skill.Name)
+					}
+					break
+				}
+			}
+		}
+		for _, name := range names {
 			status := SkillStatus{
 				Name:            name,
 				Source:          sourceDisplay,
@@ -170,10 +181,7 @@ func findLockedSkill(lock Lock, kind SourceKind, identity string, manifestSource
 		if source.Kind != kind || source.Identity != identity {
 			continue
 		}
-		if kind == SourceGit && (source.Repo != manifestSource.Repo || source.Ref != manifestSource.Ref) {
-			continue
-		}
-		if kind == SourceLocal && source.Path != manifestSource.Path {
+		if !lockSourceMatchesManifest(*source, kind, identity, manifestSource) {
 			continue
 		}
 		for j := range source.Skills {
@@ -183,6 +191,16 @@ func findLockedSkill(lock Lock, kind SourceKind, identity string, manifestSource
 		}
 	}
 	return nil
+}
+
+func lockSourceMatchesManifest(source LockSource, kind SourceKind, identity string, manifestSource ManifestSource) bool {
+	if source.Kind != kind || source.Identity != identity || source.Plugin != manifestSource.Plugin {
+		return false
+	}
+	if kind == SourceGit {
+		return source.Repo == manifestSource.Repo && source.Ref == manifestSource.Ref
+	}
+	return source.Path == manifestSource.Path
 }
 
 func installedStatus(installer *installer, target string, skill LockedSkill, disableModelInvocation bool) string {
@@ -299,6 +317,13 @@ func (engine *Engine) lockAndCacheIssues(ctx context.Context, manifest Manifest,
 	for _, source := range manifest.Sources {
 		for _, name := range source.Skills {
 			declared[name] = struct{}{}
+		}
+		if source.Plugin != "" && len(source.Skills) == 0 {
+			if lockedSource := matchingAnyLockSource(lock, source); lockedSource != nil {
+				for _, skill := range lockedSource.Skills {
+					declared[skill.Name] = struct{}{}
+				}
+			}
 		}
 	}
 	var issues []DoctorIssue

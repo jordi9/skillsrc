@@ -32,7 +32,8 @@ type ManifestSource struct {
 	Repo                   string          `toml:"repo,omitempty"`
 	Path                   string          `toml:"path,omitempty"`
 	Ref                    string          `toml:"ref,omitempty"`
-	Skills                 []string        `toml:"skills"`
+	Plugin                 string          `toml:"plugin,omitempty"`
+	Skills                 []string        `toml:"skills,omitempty"`
 	DisableModelInvocation map[string]bool `toml:"-"`
 	ResolvedPath           string          `toml:"-"`
 }
@@ -48,6 +49,7 @@ type LockSource struct {
 	Repo     string        `toml:"repo,omitempty"`
 	Path     string        `toml:"path,omitempty"`
 	Ref      string        `toml:"ref,omitempty"`
+	Plugin   string        `toml:"plugin,omitempty"`
 	Commit   string        `toml:"commit,omitempty"`
 	Skills   []LockedSkill `toml:"skills"`
 }
@@ -111,6 +113,7 @@ func LoadManifest(path string) (Manifest, error) {
 			Repo   string             `toml:"repo,omitempty"`
 			Path   string             `toml:"path,omitempty"`
 			Ref    string             `toml:"ref,omitempty"`
+			Plugin string             `toml:"plugin,omitempty"`
 			Skills []mapOrStringSkill `toml:"skills"`
 		} `toml:"sources"`
 	}
@@ -123,7 +126,7 @@ func LoadManifest(path string) (Manifest, error) {
 	}
 	manifest := Manifest{Version: raw.Version, Sources: make([]ManifestSource, len(raw.Sources))}
 	for i, source := range raw.Sources {
-		manifest.Sources[i] = ManifestSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref, DisableModelInvocation: make(map[string]bool)}
+		manifest.Sources[i] = ManifestSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref, Plugin: source.Plugin, DisableModelInvocation: make(map[string]bool)}
 		for _, skill := range source.Skills {
 			manifest.Sources[i].Skills = append(manifest.Sources[i].Skills, skill.Name)
 			if skill.DisableModelInvocation {
@@ -156,8 +159,11 @@ func validateManifest(manifest *Manifest) error {
 		if hasPath && source.Ref != "" {
 			return &ValidationError{Problem: fmt.Sprintf("source %d: local source cannot set ref", i+1)}
 		}
-		if len(source.Skills) == 0 {
-			return &ValidationError{Problem: fmt.Sprintf("source %d must select at least one skill", i+1)}
+		if source.Plugin != "" && (!skillNamePattern.MatchString(source.Plugin) || source.Plugin == "." || source.Plugin == "..") {
+			return &ValidationError{Problem: fmt.Sprintf("source %d has invalid plugin %q", i+1, source.Plugin)}
+		}
+		if len(source.Skills) == 0 && source.Plugin == "" {
+			return &ValidationError{Problem: fmt.Sprintf("source %d must select at least one skill or a plugin", i+1)}
 		}
 		for _, name := range source.Skills {
 			if !skillNamePattern.MatchString(name) || name == "." || name == ".." {
@@ -239,6 +245,9 @@ func ValidateLock(lock Lock) error {
 }
 
 func validateLockSource(source LockSource, position int) error {
+	if source.Plugin != "" && (!skillNamePattern.MatchString(source.Plugin) || source.Plugin == "." || source.Plugin == "..") {
+		return &ValidationError{Problem: fmt.Sprintf("lock source %d has invalid plugin %q", position, source.Plugin)}
+	}
 	if source.Kind != SourceGit && source.Kind != SourceLocal {
 		return &ValidationError{Problem: fmt.Sprintf("lock source %d has invalid kind %q", position, source.Kind)}
 	}
@@ -259,14 +268,15 @@ func EncodeManifest(manifest Manifest) ([]byte, error) {
 		Repo   string   `toml:"repo,omitempty"`
 		Path   string   `toml:"path,omitempty"`
 		Ref    string   `toml:"ref,omitempty"`
-		Skills []string `toml:"skills"`
+		Plugin string   `toml:"plugin,omitempty"`
+		Skills []string `toml:"skills,omitempty"`
 	}
 	stable := struct {
 		Version int             `toml:"version"`
 		Sources []encodedSource `toml:"sources,omitempty"`
 	}{Version: manifest.Version, Sources: make([]encodedSource, len(manifest.Sources))}
 	for i, source := range manifest.Sources {
-		stable.Sources[i] = encodedSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref}
+		stable.Sources[i] = encodedSource{Repo: source.Repo, Path: source.Path, Ref: source.Ref, Plugin: source.Plugin}
 		for _, name := range source.Skills {
 			if source.DisableModelInvocation[name] {
 				name = "!" + name
@@ -295,7 +305,7 @@ func EncodeLock(lock Lock) ([]byte, error) {
 	}
 	sort.Slice(stable.Sources, func(i, j int) bool {
 		left, right := stable.Sources[i], stable.Sources[j]
-		return left.Identity+"\x00"+left.Ref+"\x00"+left.Repo+"\x00"+left.Path < right.Identity+"\x00"+right.Ref+"\x00"+right.Repo+"\x00"+right.Path
+		return left.Identity+"\x00"+left.Ref+"\x00"+left.Plugin+"\x00"+left.Repo+"\x00"+left.Path < right.Identity+"\x00"+right.Ref+"\x00"+right.Plugin+"\x00"+right.Repo+"\x00"+right.Path
 	})
 	var buffer bytes.Buffer
 	if err := toml.NewEncoder(&buffer).Encode(stable); err != nil {

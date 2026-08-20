@@ -58,6 +58,30 @@ skills=["../one"]
 	}
 }
 
+func TestLoadManifestAcceptsPluginOnlySourceAndRoundTripsPlugin(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "skills.toml")
+	writeTestFile(t, path, `version = 1
+[[sources]]
+repo = "cursor/plugins"
+plugin = "pstack"
+`)
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := manifest.Sources[0].Plugin, "pstack"; got != want {
+		t.Fatalf("Plugin = %q, want %q", got, want)
+	}
+	encoded, err := EncodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `plugin = "pstack"`) || strings.Contains(string(encoded), "skills =") {
+		t.Fatalf("encoded manifest does not preserve plugin-only selection:\n%s", encoded)
+	}
+}
+
 func TestLoadManifestAcceptsDisableModelInvocationForms(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "skills.toml")
