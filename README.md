@@ -140,7 +140,8 @@ Manifest paths must stay within the repository. Remote, absolute, and escaping p
 metadata only locates skills; skillsrc exposes and stores the resulting skills like any others.
 
 When the same skill name appears in multiple discovery locations, the higher-priority location wins. Identical
-marketplace copies collapse; remaining same-priority conflicts are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as
+marketplace copies collapse. For conflicting marketplace copies, the first declaration wins and `add` or `discover`
+prints the chosen and ignored paths; other same-priority conflicts are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as
 regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
 
 ## Commands

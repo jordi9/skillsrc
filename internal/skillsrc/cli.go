@@ -298,6 +298,12 @@ func displayPathsInText(text, home string) string {
 	}
 }
 
+func printWarnings(output io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(output, "! Warning: %s\n", warning)
+	}
+}
+
 func printFetches(output io.Writer, fetches []FetchEvent, home string) {
 	for _, fetch := range fetches {
 		detail := humanFetchReason(fetch.Reason)
@@ -403,6 +409,7 @@ func printResult(output io.Writer, label string, result Result, home string, fet
 	if !fetchesPrinted {
 		printFetches(output, result.Fetches, home)
 	}
+	printWarnings(output, result.Warnings)
 	counts := map[string]int{"installed": 0, "updated": 0, "repaired": 0, "unchanged": 0, "pruned": 0}
 	names := map[string][]string{}
 	for _, skill := range result.Skills {
@@ -484,6 +491,10 @@ func runDiscoverCLI(ctx context.Context, args []string, invocation cliInvocation
 	if len(result.Fetches) > 0 {
 		fmt.Fprintln(runtime.Out)
 	}
+	printWarnings(runtime.Out, result.Warnings)
+	if len(result.Warnings) > 0 {
+		fmt.Fprintln(runtime.Out)
+	}
 	printAvailability(runtime.Out, displaySource(parsed.source, runtime.HomeDir), names)
 	return 0
 }
@@ -562,6 +573,10 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 	if len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
 		printFetches(output, result.Fetches, home)
 		if len(result.Fetches) > 0 {
+			fmt.Fprintln(output)
+		}
+		printWarnings(output, result.Warnings)
+		if len(result.Warnings) > 0 {
 			fmt.Fprintln(output)
 		}
 		printAvailability(output, displaySource(parsed.source, home), names)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -176,7 +177,7 @@ func TestDiscoverSkillsCursorSupportsStringArraysAndSafeBareSources(t *testing.T
 	}
 }
 
-func TestDiscoverSkillsRejectsConflictingMarketplaceSkills(t *testing.T) {
+func TestDiscoverSkillsKeepsFirstConflictingMarketplaceSkillAndWarns(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
@@ -187,12 +188,19 @@ func TestDiscoverSkillsRejectsConflictingMarketplaceSkills(t *testing.T) {
 		makeSkill(t, filepath.Join(root, plugin, "skills", "shared"), "shared", plugin)
 	}
 
-	if _, err := DiscoverSkills(root); err == nil || !strings.Contains(err.Error(), `ambiguous skill "shared"`) {
-		t.Fatalf("global discovery error = %v", err)
+	found, warnings, err := DiscoverSkillsWithWarnings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["shared"].Path; got != "one/skills/shared" {
+		t.Fatalf("shared path = %q, want first discovered copy", got)
+	}
+	if got, want := warnings, []string{`duplicate skill "shared"; using "one/skills/shared" and ignoring "two/skills/shared"`}; !slices.Equal(got, want) {
+		t.Fatalf("warnings = %#v, want %#v", got, want)
 	}
 }
 
-func TestDiscoverSkillsRejectsConflictingMarketplaceCopiesRegardlessOfPackaging(t *testing.T) {
+func TestDiscoverSkillsDoesNotUsePackagingNamesToResolveConflicts(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ".cursor-plugin", "marketplace.json"), `{
@@ -203,9 +211,15 @@ func TestDiscoverSkillsRejectsConflictingMarketplaceCopiesRegardlessOfPackaging(
 		makeSkill(t, filepath.Join(root, plugin, "skills", "shared"), "shared", plugin)
 	}
 
-	_, err := DiscoverSkills(root)
-	if err == nil || !strings.Contains(err.Error(), `ambiguous skill "shared"`) {
-		t.Fatalf("discovery error = %v", err)
+	found, warnings, err := DiscoverSkillsWithWarnings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := found["shared"].Path; got != "bundle/skills/shared" {
+		t.Fatalf("shared path = %q, want first discovered copy", got)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `ignoring "dedicated/skills/shared"`) {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 }
 

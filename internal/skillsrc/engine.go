@@ -23,6 +23,7 @@ type Options struct {
 
 type Result struct {
 	Fetches      []FetchEvent  `json:"fetches,omitempty"`
+	Warnings     []string      `json:"warnings,omitempty"`
 	Skills       []SkillAction `json:"skills,omitempty"`
 	Changes      []Change      `json:"changes,omitempty"`
 	LocalSkipped []string      `json:"local_skipped,omitempty"`
@@ -97,8 +98,8 @@ func (engine *Engine) addLocked(ctx context.Context, installer *installer, sourc
 		return nil, Result{}, err
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
-	available, lockedCommit, lockedSource, err := engine.discoverForAdd(ctx, source, manifest, oldLock, git)
-	result := Result{Fetches: git.Fetches()}
+	available, warnings, lockedCommit, lockedSource, err := engine.discoverForAdd(ctx, source, manifest, oldLock, git)
+	result := Result{Fetches: git.Fetches(), Warnings: warnings}
 	if err != nil {
 		return nil, result, err
 	}
@@ -384,77 +385,77 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 	return -1, nil
 }
 
-func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) ([]string, string, string, error) {
+func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) ([]string, []string, string, string, error) {
 	index, err := manifestSourceIndex(manifest, source)
 	if err != nil || index < 0 || source.Repo == "" {
-		available, discoverErr := engine.discover(ctx, source, git)
-		return available, "", "", discoverErr
+		available, warnings, discoverErr := engine.discover(ctx, source, git)
+		return available, warnings, "", "", discoverErr
 	}
 	existing := manifest.Sources[index]
 	repository, err := NormalizeRepository(existing.Repo)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, "", "", err
 	}
 	previous := matchingLockSource(lock, existing, repository.Identity)
 	if previous == nil {
-		available, discoverErr := engine.discover(ctx, source, git)
-		return available, "", "", discoverErr
+		available, warnings, discoverErr := engine.discover(ctx, source, git)
+		return available, warnings, "", "", discoverErr
 	}
 	commit, err := git.Resolve(ctx, existing.Repo, existing.Ref, false, previous.Commit)
 	if err != nil {
-		return nil, previous.Commit, existing.Repo, err
+		return nil, nil, previous.Commit, existing.Repo, err
 	}
 	root, err := os.MkdirTemp("", "skillsrc-git-")
 	if err != nil {
-		return nil, commit, existing.Repo, err
+		return nil, nil, commit, existing.Repo, err
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 	if err := git.Materialize(ctx, existing.Repo, commit, root); err != nil {
-		return nil, commit, existing.Repo, err
+		return nil, nil, commit, existing.Repo, err
 	}
-	available, err := discoveredNames(root)
+	available, warnings, err := discoveredNames(root)
 	if err != nil {
-		return nil, commit, existing.Repo, err
+		return nil, nil, commit, existing.Repo, err
 	}
-	return available, commit, existing.Repo, nil
+	return available, warnings, commit, existing.Repo, nil
 }
 
 func (engine *Engine) Discover(ctx context.Context, source ManifestSource) ([]string, Result, error) {
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
-	names, err := engine.discover(ctx, source, git)
-	return names, Result{Fetches: git.Fetches()}, err
+	names, warnings, err := engine.discover(ctx, source, git)
+	return names, Result{Fetches: git.Fetches(), Warnings: warnings}, err
 }
 
-func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *GitOperation) ([]string, error) {
+func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *GitOperation) ([]string, []string, error) {
 	root := source.ResolvedPath
 	if source.Repo != "" {
 		commit, err := git.Resolve(ctx, source.Repo, source.Ref, true, "")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		root, err = os.MkdirTemp("", "skillsrc-discover-")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		defer func() { _ = os.RemoveAll(root) }()
 		if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	return discoveredNames(root)
 }
 
-func discoveredNames(root string) ([]string, error) {
-	discovered, err := DiscoverSkills(root)
+func discoveredNames(root string) ([]string, []string, error) {
+	discovered, warnings, err := DiscoverSkillsWithWarnings(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	names := make([]string, 0, len(discovered))
 	for name := range discovered {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names, nil
+	return names, warnings, nil
 }
 
 type resolvedSource struct {

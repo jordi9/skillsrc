@@ -25,8 +25,9 @@ type DiscoveredSkill struct {
 
 type discoveredSkillCandidate struct {
 	DiscoveredSkill
-	priority int
-	hash     string
+	priority    int
+	marketplace bool
+	hash        string
 }
 
 type skillCandidatePath struct {
@@ -36,12 +37,18 @@ type skillCandidatePath struct {
 }
 
 func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
+	discovered, _, err := DiscoverSkillsWithWarnings(root)
+	return discovered, err
+}
+
+func DiscoverSkillsWithWarnings(root string) (map[string]DiscoveredSkill, []string, error) {
 	discovered, err := discoverSkillCandidates(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	result := make(map[string]DiscoveredSkill)
 	selected := make(map[string]discoveredSkillCandidate)
+	var warnings []string
 	for _, skill := range discovered {
 		previous, exists := selected[skill.Name]
 		if !exists || skill.priority < previous.priority {
@@ -49,15 +56,15 @@ func DiscoverSkills(root string) (map[string]DiscoveredSkill, error) {
 			result[skill.Name] = skill.DiscoveredSkill
 			continue
 		}
-		if skill.priority > previous.priority || previous.Path == skill.Path {
+		if skill.priority > previous.priority || previous.Path == skill.Path || previous.hash == skill.hash {
 			continue
 		}
-		if previous.hash == skill.hash {
-			continue
+		if !previous.marketplace || !skill.marketplace {
+			return nil, nil, ambiguousSkill(skill.Name, previous.Path, skill.Path)
 		}
-		return nil, ambiguousSkill(skill.Name, previous.Path, skill.Path)
+		warnings = append(warnings, fmt.Sprintf("duplicate skill %q; using %q and ignoring %q", skill.Name, previous.Path, skill.Path))
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 func ambiguousSkill(name, first, second string) error {
@@ -394,6 +401,7 @@ func materializeSkillCandidates(root string, candidates []skillCandidatePath) ([
 		discovered = append(discovered, discoveredSkillCandidate{
 			DiscoveredSkill: DiscoveredSkill{Name: name, Path: filepath.ToSlash(relative)},
 			priority:        candidate.priority,
+			marketplace:     candidate.marketplace,
 			hash:            hash,
 		})
 	}

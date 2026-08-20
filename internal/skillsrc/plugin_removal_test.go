@@ -53,6 +53,51 @@ func makeCursorPluginMarketplace(t *testing.T, root, plugin string) {
 	writeTestFile(t, filepath.Join(root, plugin, ".cursor-plugin", "plugin.json"), fmt.Sprintf(`{"name":%q,"skills":"./skills/"}`, plugin))
 }
 
+func TestDiscoverWarnsAndKeepsFirstConflictingMarketplaceSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	writeTestFile(t, filepath.Join(local, ".cursor-plugin", "marketplace.json"), `{"plugins":[{"source":"one"},{"source":"two"}]}`)
+	for _, source := range []string{"one", "two"} {
+		writeTestFile(t, filepath.Join(local, source, ".cursor-plugin", "plugin.json"), `{}`)
+		makeSkill(t, filepath.Join(local, source, "skills", "shared"), "shared", source)
+	}
+	var output, errorOutput bytes.Buffer
+	runtime := CLIOptions{WorkingDir: root, HomeDir: root, CacheDir: filepath.Join(root, "cache"), GitBinary: "git", Out: &output, Err: &errorOutput}
+
+	require.Equal(t, 0, RunCLI(context.Background(), []string{"discover", local}, runtime), errorOutput.String())
+	assert.Contains(t, output.String(), `! Warning: duplicate skill "shared"; using "one/skills/shared" and ignoring "two/skills/shared"`)
+	assert.Contains(t, output.String(), "Available skills from "+displaySource(local, root)+":\n  • shared\n")
+}
+
+func TestAddWarnsAndLocksFirstConflictingMarketplaceSkill(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	writeTestFile(t, filepath.Join(local, ".cursor-plugin", "marketplace.json"), `{"plugins":[{"source":"one"},{"source":"two"}]}`)
+	for _, source := range []string{"one", "two"} {
+		writeTestFile(t, filepath.Join(local, source, ".cursor-plugin", "plugin.json"), `{}`)
+		makeSkill(t, filepath.Join(local, source, "skills", "shared"), "shared", source)
+	}
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "shared"}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), `! Warning: duplicate skill "shared"; using "one/skills/shared" and ignoring "two/skills/shared"`)
+	lock, err := LoadLock(options.LockPath)
+	require.NoError(t, err)
+	require.Len(t, lock.Sources, 1)
+	require.Len(t, lock.Sources[0].Skills, 1)
+	assert.Equal(t, "one/skills/shared", lock.Sources[0].Skills[0].Path)
+
+	output.Reset()
+	errorOutput.Reset()
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"sync"}, options, &output, &errorOutput), errorOutput.String())
+	assert.NotContains(t, output.String(), "Warning:")
+}
+
 func TestAddSelectsSkillDiscoveredThroughMarketplaceMetadata(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
