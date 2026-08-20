@@ -471,23 +471,54 @@ func runAddCLI(ctx context.Context, engine *Engine, args []string, output io.Wri
 		return err
 	}
 	source.Plugin = parsed.plugin
-	names, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
+	available, result, err := engine.Add(ctx, source, parsed.skills, parsed.all, parsed.userOnly)
 	if err != nil {
 		return err
 	}
-	if parsed.plugin == "" && len(parsed.skills) == 0 && !parsed.all && len(names) != 1 {
+	if parsed.plugin == "" && len(parsed.skills) == 0 && !parsed.all && (len(available.Skills) != 1 || len(available.Plugins) > 0) {
 		printFetches(output, result.Fetches, home)
 		if len(result.Fetches) > 0 {
 			fmt.Fprintln(output)
 		}
-		fmt.Fprintf(output, "Available skills from %s:\n", displaySource(parsed.source, home))
-		for _, name := range names {
-			fmt.Fprintf(output, "  • %s\n", name)
-		}
+		printAddAvailability(output, displaySource(parsed.source, home), parsed.source, available)
 		return nil
 	}
 	printResult(output, "Add complete", result, home, false)
 	return nil
+}
+
+func printAddAvailability(output io.Writer, source, inputSource string, available AddAvailability) {
+	fmt.Fprintf(output, "Available skills from %s:\n", source)
+	if len(available.Plugins) == 0 {
+		for _, name := range available.Skills {
+			fmt.Fprintf(output, "  • %s\n", name)
+		}
+		return
+	}
+	fmt.Fprintln(output, "  Plugins:")
+	for _, plugin := range available.Plugins {
+		fmt.Fprintf(output, "    %s\n", plugin.Name)
+		for _, name := range plugin.Skills {
+			fmt.Fprintf(output, "      • %s\n", name)
+		}
+	}
+	if len(available.Standalone) > 0 {
+		fmt.Fprintln(output, "  Standalone skills:")
+		for _, name := range available.Standalone {
+			fmt.Fprintf(output, "    • %s\n", name)
+		}
+	}
+	plugin := available.Plugins[0]
+	fmt.Fprintln(output, "\nExamples:")
+	fmt.Fprintf(output, "  skillsrc add %s --plugin %s\n", source, plugin.Name)
+	if len(plugin.Skills) == 0 {
+		return
+	}
+	if skillsCLISpecifierPattern.MatchString(inputSource + "@" + plugin.Skills[0]) {
+		fmt.Fprintf(output, "  skillsrc add %s@%s\n", inputSource, plugin.Skills[0])
+		return
+	}
+	fmt.Fprintf(output, "  skillsrc add %s %s\n", source, plugin.Skills[0])
 }
 
 type addArguments struct {

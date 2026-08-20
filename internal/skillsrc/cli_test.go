@@ -305,6 +305,59 @@ func TestCLIRemoveRejectsEmptyPluginWithoutRemovingOrdinarySource(t *testing.T) 
 	assert.FileExists(t, filepath.Join(options.TargetDir, "one", "SKILL.md"))
 }
 
+func TestCLIAddWithoutSelectionGroupsAvailablePluginsAndStandaloneSkills(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "pstack")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "architect"), "architect", "architecture")
+	makeSkill(t, filepath.Join(local, "pstack", "skills", "arena"), "arena", "parallel")
+	makeSkill(t, filepath.Join(local, "standalone"), "standalone", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
+	displayedSource := displaySource(local, filepath.Dir(root))
+	assert.Equal(t, "Available skills from "+displayedSource+":\n  Plugins:\n    pstack\n      • architect\n      • arena\n  Standalone skills:\n    • standalone\n\nExamples:\n  skillsrc add "+displayedSource+" --plugin pstack\n  skillsrc add "+displayedSource+" architect\n", output.String())
+	assert.NotContains(t, output.String(), "Standalone skills:\n    • architect")
+}
+
+func TestPrintAddAvailabilityUsesRepositorySkillShorthandInExamples(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	available := AddAvailability{
+		Skills:  []string{"architect"},
+		Plugins: []AvailablePlugin{{Name: "pstack", Skills: []string{"architect"}}},
+	}
+
+	printAddAvailability(&output, "cursor/plugins", "cursor/plugins", available)
+
+	assert.Contains(t, output.String(), "\nExamples:\n  skillsrc add cursor/plugins --plugin pstack\n  skillsrc add cursor/plugins@architect\n")
+}
+
+func TestCLIAddWithoutSelectionListsASinglePluginSkillInsteadOfInstallingItUnscoped(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeCursorPluginMarketplace(t, local, "review-kit")
+	makeSkill(t, filepath.Join(local, "review-kit", "skills", "review"), "review", "body")
+	manifestPath := filepath.Join(root, "skills.toml")
+	writeTestFile(t, manifestPath, "version = 1\n")
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	require.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local}, options, &output, &errorOutput), errorOutput.String())
+	assert.Contains(t, output.String(), "review-kit\n      • review\n")
+	assert.NotContains(t, output.String(), "(--plugin review-kit)")
+	assert.NotContains(t, output.String(), "Add complete")
+	assert.NoDirExists(t, filepath.Join(options.TargetDir, "review"))
+	manifest, err := LoadManifest(manifestPath)
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Sources)
+}
+
 func TestCLIAddCursorPluginInstallsDeclaredSkillsAndTracksMembership(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

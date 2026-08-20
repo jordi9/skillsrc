@@ -75,8 +75,19 @@ func (engine *Engine) newInstaller() *installer {
 	return newInstaller(engine.options.TargetDir, engine.options.ManifestPath, lockDir)
 }
 
-func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested []string, all, userOnly bool) ([]string, Result, error) {
-	var available []string
+type AddAvailability struct {
+	Skills     []string
+	Standalone []string
+	Plugins    []AvailablePlugin
+}
+
+type AvailablePlugin struct {
+	Name   string
+	Skills []string
+}
+
+func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested []string, all, userOnly bool) (AddAvailability, Result, error) {
+	var available AddAvailability
 	var result Result
 	installer := engine.newInstaller()
 	err := installer.withLock(ctx, func() error {
@@ -87,22 +98,27 @@ func (engine *Engine) Add(ctx context.Context, source ManifestSource, requested 
 	return available, result, err
 }
 
-func (engine *Engine) addLocked(ctx context.Context, installer *installer, source ManifestSource, requested []string, all, userOnly bool) ([]string, Result, error) {
+func (engine *Engine) addLocked(ctx context.Context, installer *installer, source ManifestSource, requested []string, all, userOnly bool) (AddAvailability, Result, error) {
 	manifest, err := LoadManifest(engine.options.ManifestPath)
 	if err != nil {
-		return nil, Result{}, err
+		return AddAvailability{}, Result{}, err
 	}
 	oldLock, err := LoadLock(engine.options.LockPath)
 	if err != nil {
-		return nil, Result{}, err
+		return AddAvailability{}, Result{}, err
 	}
 	git := NewGitOperation(engine.options.CacheDir, engine.options.GitBinary)
 	available, lockedCommit, lockedSource, err := engine.discoverForAdd(ctx, source, manifest, oldLock, git)
 	result := Result{Fetches: git.Fetches()}
 	if err != nil {
-		return nil, result, err
+		return AddAvailability{}, result, err
 	}
-	selected, err := selectAddedSkills(available, requested, all || source.Plugin != "" && len(requested) == 0)
+	var selected []string
+	if source.Plugin == "" && len(requested) == 0 && !all && len(available.Plugins) > 0 {
+		selected = nil
+	} else {
+		selected, err = selectAddedSkills(available.Skills, requested, all || source.Plugin != "" && len(requested) == 0)
+	}
 	if err != nil {
 		if lockedCommit != "" {
 			return available, result, fmt.Errorf("requested skill is not available at locked revision %.12s; run 'skillsrc update %s' before adding it: %w", lockedCommit, lockedSource, err)
@@ -510,43 +526,38 @@ func manifestSourceIndex(manifest Manifest, candidate ManifestSource) (int, erro
 	return -1, nil
 }
 
-func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) ([]string, string, string, error) {
+func (engine *Engine) discoverForAdd(ctx context.Context, source ManifestSource, manifest Manifest, lock Lock, git *GitOperation) (AddAvailability, string, string, error) {
 	index, err := manifestSourceIndex(manifest, source)
 	if err != nil || index < 0 || source.Repo == "" {
-		available, discoverErr := engine.discover(ctx, source, git)
+		available, discoverErr := engine.discoverAvailability(ctx, source, git)
 		return available, "", "", discoverErr
 	}
 	existing := manifest.Sources[index]
 	repository, err := NormalizeRepository(existing.Repo)
 	if err != nil {
-		return nil, "", "", err
+		return AddAvailability{}, "", "", err
 	}
 	previous := matchingLockSource(lock, existing, repository.Identity)
 	if previous == nil {
-		available, discoverErr := engine.discover(ctx, source, git)
+		available, discoverErr := engine.discoverAvailability(ctx, source, git)
 		return available, "", "", discoverErr
 	}
 	commit, err := git.Resolve(ctx, existing.Repo, existing.Ref, false, previous.Commit)
 	if err != nil {
-		return nil, previous.Commit, existing.Repo, err
+		return AddAvailability{}, previous.Commit, existing.Repo, err
 	}
 	root, err := os.MkdirTemp("", "skillsrc-git-")
 	if err != nil {
-		return nil, commit, existing.Repo, err
+		return AddAvailability{}, commit, existing.Repo, err
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 	if err := git.Materialize(ctx, existing.Repo, commit, root); err != nil {
-		return nil, commit, existing.Repo, err
+		return AddAvailability{}, commit, existing.Repo, err
 	}
-	found, err := discoverSelectedPlugin(root, source.Plugin)
+	available, err := discoverAvailabilityAtRoot(root, source.Plugin)
 	if err != nil {
-		return nil, commit, existing.Repo, err
+		return AddAvailability{}, commit, existing.Repo, err
 	}
-	available := make([]string, 0, len(found))
-	for name := range found {
-		available = append(available, name)
-	}
-	sort.Strings(available)
 	return available, commit, existing.Repo, nil
 }
 
@@ -557,38 +568,76 @@ func (engine *Engine) Discover(ctx context.Context, source ManifestSource) ([]st
 }
 
 func (engine *Engine) discover(ctx context.Context, source ManifestSource, git *GitOperation) ([]string, error) {
+	available, err := engine.discoverAvailability(ctx, source, git)
+	return available.Skills, err
+}
+
+func (engine *Engine) discoverAvailability(ctx context.Context, source ManifestSource, git *GitOperation) (AddAvailability, error) {
 	root := source.ResolvedPath
 	if source.Repo != "" {
 		commit, err := git.Resolve(ctx, source.Repo, source.Ref, true, "")
 		if err != nil {
-			return nil, err
+			return AddAvailability{}, err
 		}
 		root, err = os.MkdirTemp("", "skillsrc-discover-")
 		if err != nil {
-			return nil, err
+			return AddAvailability{}, err
 		}
 		defer func() { _ = os.RemoveAll(root) }()
 		if err := git.Materialize(ctx, source.Repo, commit, root); err != nil {
-			return nil, err
+			return AddAvailability{}, err
 		}
 	}
-	discovered, err := discoverSelectedPlugin(root, source.Plugin)
-	if err != nil {
-		return nil, err
+	return discoverAvailabilityAtRoot(root, source.Plugin)
+}
+
+func discoverAvailabilityAtRoot(root, plugin string) (AddAvailability, error) {
+	if plugin != "" {
+		discovered, err := DiscoverPluginSkills(root, plugin)
+		if err != nil {
+			return AddAvailability{}, err
+		}
+		return AddAvailability{Skills: sortedDiscoveredNames(discovered)}, nil
 	}
+	discovery, err := DiscoverSkillSources(root)
+	if err != nil {
+		return AddAvailability{}, err
+	}
+	available := AddAvailability{Skills: sortedDiscoveredNames(discovery.Global)}
+	for name, skill := range discovery.Global {
+		pluginOwned := false
+		for _, pluginSkills := range discovery.Plugins {
+			if pluginSkill, ok := pluginSkills[name]; ok && pluginSkill.Path == skill.Path {
+				pluginOwned = true
+				break
+			}
+		}
+		if !pluginOwned {
+			available.Standalone = append(available.Standalone, name)
+		}
+	}
+	sort.Strings(available.Standalone)
+	pluginNames := make([]string, 0, len(discovery.Plugins))
+	for name := range discovery.Plugins {
+		pluginNames = append(pluginNames, name)
+	}
+	sort.Strings(pluginNames)
+	for _, name := range pluginNames {
+		available.Plugins = append(available.Plugins, AvailablePlugin{
+			Name:   name,
+			Skills: sortedDiscoveredNames(discovery.Plugins[name]),
+		})
+	}
+	return available, nil
+}
+
+func sortedDiscoveredNames(discovered map[string]DiscoveredSkill) []string {
 	names := make([]string, 0, len(discovered))
 	for name := range discovered {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names, nil
-}
-
-func discoverSelectedPlugin(root, plugin string) (map[string]DiscoveredSkill, error) {
-	if plugin != "" {
-		return DiscoverPluginSkills(root, plugin)
-	}
-	return DiscoverSkills(root)
+	return names
 }
 
 type resolvedSource struct {
