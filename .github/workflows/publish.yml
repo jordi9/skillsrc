@@ -30,6 +30,7 @@ jobs:
 
       - name: Verify
         run: |
+          make fmt-check
           go test ./...
           go vet ./...
 
