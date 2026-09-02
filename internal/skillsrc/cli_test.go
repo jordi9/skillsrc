@@ -671,6 +671,45 @@ func TestCLIAddAndRemoveLocalSkill(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(options.TargetDir, "one"))
 }
 
+func TestCLIAddAndRemovePreserveSymlinkedManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	local := filepath.Join(root, "source")
+	makeSkill(t, filepath.Join(local, "one"), "one", "body")
+	realManifest := filepath.Join(root, "dotfiles", "skills.toml")
+	writeTestFile(t, realManifest, "version = 1\n")
+	manifestPath := filepath.Join(root, "skills.toml")
+	const linkTarget = "dotfiles/skills.toml"
+	require.NoError(t, os.Symlink(linkTarget, manifestPath))
+	options := testOptions(root, manifestPath)
+	var output, errorOutput bytes.Buffer
+
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"add", local, "one"}, options, &output, &errorOutput), errorOutput.String())
+	info, err := os.Lstat(manifestPath)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	target, err := os.Readlink(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, linkTarget, target)
+	manifest, err := LoadManifest(realManifest)
+	require.NoError(t, err)
+	require.Len(t, manifest.Sources, 1)
+	assert.Equal(t, []string{"one"}, manifest.Sources[0].Skills)
+
+	output.Reset()
+	errorOutput.Reset()
+	assert.Equal(t, 0, runCLIResolved(context.Background(), []string{"remove", "one"}, options, &output, &errorOutput), errorOutput.String())
+	info, err = os.Lstat(manifestPath)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	target, err = os.Readlink(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, linkTarget, target)
+	manifest, err = LoadManifest(realManifest)
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Sources)
+}
+
 func TestCLIManifestFlagUsesSiblingLock(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

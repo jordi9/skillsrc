@@ -183,16 +183,7 @@ func (installer *installer) stageSkill(ctx context.Context, staging, name, sourc
 
 func (installer *installer) publishStagedSkill(staging, destination, name string) (bool, error) {
 	if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
-		if err := installer.validateInstallTarget(name); err != nil {
-			return false, err
-		}
-		if err := os.Rename(staging, destination); err != nil {
-			if collisionErr := installer.validateInstallTarget(name); errors.Is(collisionErr, errUnmanagedCollision) {
-				return false, collisionErr
-			}
-			return false, fmt.Errorf("publish skill %q: %w", name, err)
-		}
-		return true, syncDirectory(installer.target)
+		return installer.publishNewSkill(staging, destination, name)
 	}
 
 	backup := filepath.Join(installer.target, "."+name+".skillsrc-old-"+strconvTime())
@@ -235,6 +226,19 @@ func (installer *installer) publishStagedSkill(staging, destination, name string
 	}
 	if err := os.Remove(journalPath); err != nil {
 		return true, fmt.Errorf("remove transaction journal for %q: %w", name, err)
+	}
+	return true, syncDirectory(installer.target)
+}
+
+func (installer *installer) publishNewSkill(staging, destination, name string) (bool, error) {
+	if err := installer.validateInstallTarget(name); err != nil {
+		return false, err
+	}
+	if err := os.Rename(staging, destination); err != nil {
+		if collisionErr := installer.validateInstallTarget(name); errors.Is(collisionErr, errUnmanagedCollision) {
+			return false, collisionErr
+		}
+		return false, fmt.Errorf("publish skill %q: %w", name, err)
 	}
 	return true, syncDirectory(installer.target)
 }

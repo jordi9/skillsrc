@@ -351,7 +351,18 @@ func writeManifest(path string, manifest Manifest) error {
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(path, encoded, 0o644); err != nil {
+	writePath := path
+	info, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect manifest path: %w", err)
+	}
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		writePath, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve manifest symlink: %w", err)
+		}
+	}
+	if err := writeAtomic(writePath, encoded, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	return nil

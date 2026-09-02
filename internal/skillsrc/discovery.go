@@ -329,9 +329,7 @@ func safeManifestPath(root, base, path string, allowBare bool) (string, bool) {
 	if path == "" || (!allowBare && !strings.HasPrefix(path, "./")) || strings.Contains(path, ":") {
 		return "", false
 	}
-	if strings.HasPrefix(path, "./") {
-		path = strings.TrimPrefix(path, "./")
-	}
+	path = strings.TrimPrefix(path, "./")
 	relative := filepath.FromSlash(path)
 	if relative == "" {
 		relative = "."
