@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+
+## [v0.5.0] - 2026-09-02
+
+### Changes
+
+- ci: publish curated changelog notes ([47e8f17](https://github.com/jordi9/skillsrc/commit/47e8f176615f435b6f9c2744ef2dc0ee26948d13))
+- discovery: keep first marketplace duplicate ([c93afbb](https://github.com/jordi9/skillsrc/commit/c93afbb73e76933a7d02b134713a4b76053cd55e))
+- discovery: support manifest-scoped plugins/skill sources ([4c70d54](https://github.com/jordi9/skillsrc/commit/4c70d544d6991beb1c1ae47aa7000ebd64bc55c2))
+- docs: unslop README ([d470854](https://github.com/jordi9/skillsrc/commit/d4708549ef64e5595edd10c48455e3027f1b9210))
+- fix: preserve symlinks when saving ([e9ce23e](https://github.com/jordi9/skillsrc/commit/e9ce23e7ee391e6b8a7a6109fbe388a4327d4df7))
+- discovery: find skills from plugins ([dc3ada8](https://github.com/jordi9/skillsrc/commit/dc3ada85c184ff0a99576d7e5b1fecfa7c157aef))
+
 ## [v0.4.1] - 2026-08-13
 
 ### Changes
