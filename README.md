@@ -118,10 +118,10 @@ skills = [
 ]
 ```
 
-For entries marked with `!` or `disable-model-invocation = true`, `skillsrc` sets the root
-`disable-model-invocation: true` key in the installed `SKILL.md`. It does not change the source or its lock hash. When
-`skillsrc` rewrites the manifest, it uses the shorthand. It accepts `disable-model-invocation = false` and writes the
-entry as an ordinary skill name. A logical skill name may appear only once, so `"one"` and `"!one"` are duplicates.
+For entries marked with `!` or `disable-model-invocation = true`, `skillsrc` sets the root `disable-model-invocation:
+true` key in the installed `SKILL.md`. It does not change the source or its lock hash. When `skillsrc` rewrites the
+manifest, it uses the shorthand. It accepts `disable-model-invocation = false` and writes the entry as an ordinary skill
+name. A logical skill name may appear only once, so `"one"` and `"!one"` are duplicates.
 
 A local source cannot set `ref`. Selected skills must be discoverable in the source and cannot be selected by more than
 one source.
@@ -142,8 +142,8 @@ the repository. Claude and Cursor metadata only tells `skillsrc` where to find s
 like any others.
 
 When the same skill name appears in multiple discovery locations, the higher-priority location wins. `skillsrc` merges
-identical marketplace copies. If marketplace copies conflict, the first declaration wins, and `add` or `discover`
-prints the chosen and ignored paths. It rejects other conflicts at the same priority as ambiguous.
+identical marketplace copies. If marketplace copies conflict, the first declaration wins, and `add` or `discover` prints
+the chosen and ignored paths. It rejects other conflicts at the same priority as ambiguous.
 
 `skillsrc` copies safe relative file symlinks as regular files when they resolve inside the selected skill. It rejects
 absolute, escaping, directory, broken, and cyclic symlinks.
@@ -279,10 +279,10 @@ directory only when it has a valid marker for that owner. An existing file, syml
 owned by another manifest causes a collision. `skillsrc` leaves it untouched and stops the operation. `skills.lock`
 records the source and upstream content hashes.
 
-Installs use staging directories, backups, and transaction journals. After an interrupted replacement or prune, the
-next command that changes files runs recovery first. Use `skillsrc doctor` to report problems with locks, installations,
-the cache, and project Git ignore files. `skillsrc doctor --repair` restores installation and project metadata when it
-can. You must resolve unmanaged collisions yourself.
+Installs use staging directories, backups, and transaction journals. After an interrupted replacement or prune, the next
+command that changes files runs recovery first. Use `skillsrc doctor` to report problems with locks, installations, the
+cache, and project Git ignore files. `skillsrc doctor --repair` restores installation and project metadata when it can.
+You must resolve unmanaged collisions yourself.
 
 Locks and hashes make installation reproducible. They do not make upstream skill instructions trustworthy. Review
 sources and lockfile changes before installing or updating them. See [SECURITY.md](SECURITY.md) for vulnerability
@@ -290,12 +290,17 @@ reporting and details about what `skillsrc` does and does not trust.
 
 ## Releasing
 
-Tags trigger releases. Maintainers can run these commands when local `main` matches `origin/main`:
+Tags trigger releases. Maintainers can run these commands from a clean change directly on `main` when local `main`
+matches `origin/main`:
 
 ```sh
 ./release.sh --dry-run
 ./release.sh
 ```
+
+The release script uses git-cliff to prepend the next version to `CHANGELOG.md`, then opens the file with `$VISUAL`,
+`$EDITOR`, or `vi`. Edit the generated section before confirming. The script commits and pushes the changelog, tags that
+commit, and CI publishes the edited section as the GitHub release notes.
 
 ## Contributing and license
 

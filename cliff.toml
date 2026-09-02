@@ -1,6 +1,17 @@
 [changelog]
-header = ""
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+"""
 body = """
+{% if version %}
+## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}
+## [Unreleased]
+{% endif %}
+
 {% if version == "v0.1.0" %}
 Initial public release of `skillsrc`.
 

@@ -47,17 +47,32 @@ jobs:
           goreleaser build --clean --single-target --output /tmp/skillsrc
           test "$(/tmp/skillsrc version)" = "skillsrc $VERSION"
 
-      - name: Generate release notes
-        uses: orhun/git-cliff-action@11ab60a12325cc82a96afbf3fb3907481e27ab96
-        id: notes
-        with:
-          config: cliff.toml
-          args: --latest --tag-pattern "^v[0-9].*" --output=/tmp/release-notes.md
-          version: v2.13.1
+      - name: Extract release notes
+        run: |
+          awk -v heading="## [$GITHUB_REF_NAME]" '
+            index($0, heading) == 1 {
+              found = 1
+              next
+            }
+            found && /^## \[/ {
+              exit
+            }
+            found {
+              print
+              if ($0 !~ /^[[:space:]]*$/) {
+                content = 1
+              }
+            }
+            END {
+              if (!found || !content) {
+                exit 1
+              }
+            }
+          ' CHANGELOG.md > /tmp/release-notes.md
 
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           goreleaser release --clean \
-            --release-notes "${{ steps.notes.outputs.changelog }}"
+            --release-notes /tmp/release-notes.md

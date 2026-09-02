@@ -5,9 +5,35 @@ usage() {
   cat <<'EOF'
 Usage: ./release.sh [--dry-run]
 
-Choose the next semantic version, preview its release notes, and push the tag.
-GitHub Actions performs the release.
+Choose the next semantic version, generate and edit its changelog entry, then
+push the release commit and tag. GitHub Actions performs the release.
 EOF
+}
+
+extract_release_notes() {
+  local version=$1
+  local changelog=$2
+
+  awk -v heading="## [$version]" '
+    index($0, heading) == 1 {
+      found = 1
+      next
+    }
+    found && /^## \[/ {
+      exit
+    }
+    found {
+      print
+      if ($0 !~ /^[[:space:]]*$/) {
+        content = 1
+      }
+    }
+    END {
+      if (!found || !content) {
+        exit 1
+      }
+    }
+  ' "$changelog"
 }
 
 dry_run=false
@@ -27,6 +53,11 @@ for command in git git-cliff jj; do
   fi
 done
 
+if ! jj diff --quiet; then
+  echo "The working copy has changes; commit or discard them before releasing" >&2
+  exit 1
+fi
+
 git_dir=$(jj git root)
 git_command=(git --git-dir="$git_dir")
 
@@ -35,11 +66,20 @@ if ! "${git_command[@]}" rev-parse -q --verify refs/heads/main >/dev/null; then
   exit 1
 fi
 
-jj git fetch --remote origin
 local_main=$("${git_command[@]}" rev-parse refs/heads/main)
-remote_main=$("${git_command[@]}" rev-parse refs/remotes/origin/main)
+if [[ "$dry_run" == true ]]; then
+  remote_main=$("${git_command[@]}" ls-remote --exit-code origin refs/heads/main | awk '{ print $1 }')
+else
+  jj git fetch --remote origin
+  remote_main=$("${git_command[@]}" rev-parse refs/remotes/origin/main)
+fi
+parent_commit=$(jj log -r '@-' --no-graph -T 'commit_id')
 if [[ "$local_main" != "$remote_main" ]]; then
   echo "Local main does not match origin/main; push or update main before releasing" >&2
+  exit 1
+fi
+if [[ "$parent_commit" != "$local_main" ]]; then
+  echo "The empty working-copy change must be directly on main before releasing" >&2
   exit 1
 fi
 
@@ -92,23 +132,51 @@ if "${git_command[@]}" rev-parse -q --verify "refs/tags/$version" >/dev/null; th
   exit 1
 fi
 
-echo
-echo "Release notes preview for $version:"
-echo
-git-cliff --repository "$git_dir" --tag "$version" "$range"
-echo
-
 if [[ "$dry_run" == true ]]; then
-  echo "[dry-run] Would tag main as $version and push the tag."
+  echo
+  echo "Release notes preview for $version:"
+  echo
+  git-cliff --repository "$git_dir" --unreleased --tag "$version"
+  echo
+  echo "[dry-run] Would update CHANGELOG.md, open it in an editor, commit it, and push $version."
   exit 0
 fi
 
-read -r -p "Tag main as $version and publish the release? [y/N] " confirm
+git-cliff --repository "$git_dir" --unreleased --tag "$version" --prepend CHANGELOG.md
+
+editor=${VISUAL:-${EDITOR:-vi}}
+read -r -a editor_command <<< "$editor"
+"${editor_command[@]}" CHANGELOG.md
+
+notes_file=$(mktemp)
+trap 'rm -f "$notes_file"' EXIT
+if ! extract_release_notes "$version" CHANGELOG.md > "$notes_file"; then
+  echo "CHANGELOG.md must contain a non-empty section headed ## [$version]" >&2
+  exit 1
+fi
+
+echo
+echo "Release notes for $version:"
+echo
+cat "$notes_file"
+echo
+read -r -p "Commit these notes and publish $version? [y/N] " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-  echo "Release cancelled."
+  echo "Release cancelled. Your CHANGELOG.md edits have been kept."
   exit 0
 fi
 
+jj describe -m "chore: prepare $version release"
+release_commit=$(jj log -r @ --no-graph -T 'commit_id')
+if ! "${git_command[@]}" push --atomic origin \
+  "$release_commit:refs/heads/main" \
+  "$release_commit:refs/tags/$version"; then
+  echo "Atomic push failed; origin/main and $version were left unchanged." >&2
+  echo "Your release commit and CHANGELOG.md edits remain in the working copy." >&2
+  exit 1
+fi
+jj bookmark set main -r @
 jj tag set "$version" -r main
-"${git_command[@]}" push origin "refs/tags/$version"
-echo "Pushed $version. GitHub Actions will publish the release."
+jj new main
+
+echo "Pushed $version. GitHub Actions will publish the committed changelog entry."
