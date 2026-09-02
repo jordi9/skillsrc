@@ -46,7 +46,7 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-for command in git git-cliff jj; do
+for command in git git-cliff go jj; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command not found: $command" >&2
     exit 1
@@ -147,6 +147,7 @@ git-cliff --repository "$git_dir" --unreleased --tag "$version" --prepend CHANGE
 editor=${VISUAL:-${EDITOR:-vi}}
 read -r -a editor_command <<< "$editor"
 "${editor_command[@]}" CHANGELOG.md
+go tool rewrap -w -c 120 CHANGELOG.md
 
 notes_file=$(mktemp)
 trap 'rm -f "$notes_file"' EXIT
@@ -166,7 +167,7 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-jj describe -m "chore: prepare $version release"
+jj describe -m "release: prepare $version"
 release_commit=$(jj log -r @ --no-graph -T 'commit_id')
 if ! "${git_command[@]}" push --atomic origin \
   "$release_commit:refs/heads/main" \
