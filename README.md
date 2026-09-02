@@ -2,18 +2,18 @@
 
 **Your `.agents`-only skills manager.**
 
-Share a project that depends on agent skills without committing the installed copies. `skillsrc` records their sources
-in `skills.toml`, locks Git revisions and content hashes in `skills.lock`, and installs them into `.agents/skills`.
+It lets a project declare its agent skills without committing installed copies. Sources go in `skills.toml`. Locked Git
+revisions and content hashes go in `skills.lock`. `skillsrc` installs the selected skills into `.agents/skills`.
 
-Run `skillsrc sync` to restore locked Git content, refresh declared local sources, and reconcile the installed set on
-another checkout. If a target is occupied by content `skillsrc` does not own, it stops instead of replacing it.
+Run `skillsrc sync` in another checkout to restore locked Git content, refresh declared local sources, and match the
+installed set to the manifest. If `skillsrc` does not own an existing target, it stops rather than replacing it.
 
-The scope is deliberate: `.agents/skills` only. Agent-specific destinations, abstraction theater and compatibility
-layers are out of scope.
+It manages `.agents/skills` and no other destination. It does not support agent-specific destinations or compatibility
+layers.
 
 ## Install
 
-A working `git` executable is the only runtime dependency. Installing from source requires Go 1.24 or later:
+The only runtime dependency is `git`. To install from source, use Go 1.24 or later:
 
 ```sh
 go install github.com/jordi9/skillsrc/cmd/skillsrc@latest
@@ -37,7 +37,7 @@ skillsrc init
 skillsrc add owner/repository@skill-name
 ```
 
-`add` records the selected skill, updates the lockfile, and installs it under `.agents/skills`.
+`add` writes the selected skill to the manifest, updates the lockfile, and installs the skill under `.agents/skills`.
 
 If you do not know the skill name, inspect the repository first. `discover` is read-only and does not require a
 `skills.toml`:
@@ -63,7 +63,8 @@ skillsrc -g init
 skillsrc -g add owner/repository@skill-name
 ```
 
-Or work directly from `~/.agents`: `skillsrc` selects user scope automatically, so `-g` is not needed.
+You can also work directly from `~/.agents`. In that directory, `skillsrc` selects user scope automatically, so you do
+not need `-g`.
 
 ```sh
 cd ~/.agents
@@ -85,8 +86,8 @@ project/
     └── skills/          # managed installations
 ```
 
-The generated `.agents/.gitignore` and installed managed skills stay untracked. The generated ignore file names only
-managed skills, so unmanaged or in-place skills under `.agents/skills` remain visible to Git.
+The root `.gitignore` keeps the generated `.agents/.gitignore` and installed managed skills untracked. The generated
+ignore file names only managed skills, so Git still shows unmanaged or in-place skills under `.agents/skills`.
 
 ## skills.toml
 
@@ -117,10 +118,10 @@ skills = [
 ]
 ```
 
-For entries marked with `!` or `disable-model-invocation = true`, `skillsrc` sets the root `disable-model-invocation:
-true` key in the installed `SKILL.md`; the source and its lock hash remain unchanged. The shorthand is used when
-manifests are rewritten. Entries with `disable-model-invocation = false` are accepted and encoded as ordinary skill
-names. A logical skill name may appear only once, so `"one"` and `"!one"` are duplicates.
+For entries marked with `!` or `disable-model-invocation = true`, `skillsrc` sets the root
+`disable-model-invocation: true` key in the installed `SKILL.md`. It does not change the source or its lock hash. When
+`skillsrc` rewrites the manifest, it uses the shorthand. It accepts `disable-model-invocation = false` and writes the
+entry as an ordinary skill name. A logical skill name may appear only once, so `"one"` and `"!one"` are duplicates.
 
 A local source cannot set `ref`. Selected skills must be discoverable in the source and cannot be selected by more than
 one source.
@@ -132,17 +133,20 @@ Skill discovery is limited to:
 - `skills/*`, plus one category level for grouped repositories;
 - `.agents/skills/*`; and
 - `.claude/skills/*`;
-- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including conventional
-  `skills/*` directories; and
+- local skill paths declared by `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json`, including
+  conventional `skills/*` directories; and
 - local skill paths declared by `.cursor-plugin/marketplace.json` and `.cursor-plugin/plugin.json`.
 
-Manifest paths must stay within the repository. Remote, absolute, and escaping paths are ignored. Claude and Cursor
-metadata only locates skills; skillsrc exposes and stores the resulting skills like any others.
+Manifest paths must stay within the repository. `skillsrc` ignores remote paths, absolute paths, and paths that escape
+the repository. Claude and Cursor metadata only tells `skillsrc` where to find skills. It handles the discovered skills
+like any others.
 
-When the same skill name appears in multiple discovery locations, the higher-priority location wins. Identical
-marketplace copies collapse. For conflicting marketplace copies, the first declaration wins and `add` or `discover`
-prints the chosen and ignored paths; other same-priority conflicts are rejected as ambiguous. Safe relative file symlinks that resolve inside a selected skill are copied as
-regular files; absolute, escaping, directory, broken, and cyclic symlinks are rejected.
+When the same skill name appears in multiple discovery locations, the higher-priority location wins. `skillsrc` merges
+identical marketplace copies. If marketplace copies conflict, the first declaration wins, and `add` or `discover`
+prints the chosen and ignored paths. It rejects other conflicts at the same priority as ambiguous.
+
+`skillsrc` copies safe relative file symlinks as regular files when they resolve inside the selected skill. It rejects
+absolute, escaping, directory, broken, and cyclic symlinks.
 
 ## Commands
 
@@ -176,8 +180,8 @@ configuration, initialization directly in `$HOME`, and overwriting an existing m
 
 ### Discover skills
 
-`discover` lists a Git repository or local directory's skills without changing a manifest, lockfile, or installation.
-It works outside an initialized skillsrc project and accepts `--ref` for Git sources.
+`discover` lists the skills in a Git repository or local directory without changing a manifest, lockfile, or
+installation. It works outside an initialized skillsrc project and accepts `--ref` for Git sources.
 
 ```sh
 skillsrc discover owner/repository
@@ -202,8 +206,8 @@ or `--all` to write them with the `!` shorthand and install them with model invo
 combined with explicit skill names.
 
 With no skill names, `add` installs the skill automatically when the source contains exactly one unique skill name. If
-there are zero or multiple skills, it only lists what the source contains. Added skills are validated before the
-manifest changes. `add` installs only newly selected skills: it does not refresh or repair existing declarations. When
+there are zero or multiple skills, it only lists what the source contains. `add` validates selected skills before it
+changes the manifest. It installs only newly selected skills and does not refresh or repair existing declarations. When
 adding to an already locked Git source, it uses that source's locked commit. If the requested skill is absent there, run
 `skillsrc update <source>` first, then retry `add`.
 
@@ -212,7 +216,7 @@ selected manifest. It does not update the remaining Git sources. `rm` is an alia
 
 ### Check, synchronize, and update
 
-These commands intentionally have different effects:
+These commands have different effects:
 
 | Command | Changes locks? | Changes installations? | Purpose |
 | --- | --- | --- | --- |
@@ -223,11 +227,11 @@ These commands intentionally have different effects:
 `sync` reproduces locked Git commits, creates missing lock entries, refreshes local content, installs the declared set,
 and prunes no-longer-declared managed skills. It does not advance an existing Git lock.
 
-`outdated` fetches configured Git refs and compares each selected skill's content hash with its locked hash. A Git
-source is reported as up to date when its selected skills are unchanged, even if other repository files changed.
-Available skill updates show the changed skill names and exact tags when present, otherwise commit dates, alongside
-short commit hashes. The command does not change the manifest, lockfile, project metadata, or installed skills. Local
-sources are resolved read-only and reported as matching the lock or having unsynchronized content changes.
+`outdated` fetches configured Git refs and compares each selected skill's content hash with its locked hash. It reports
+a Git source as up to date when its selected skills have not changed, even if other files in the repository have.
+Available updates show the changed skill names and short commit hashes. They also show exact tags when available, or
+commit dates otherwise. The command does not change the manifest, lockfile, project metadata, or installed skills. It
+reads local sources without changing them and reports whether their content matches the lock.
 
 `update` refreshes all Git sources, or only sources matched by the supplied repository/path or skill selectors, and then
 performs a sync. `outdated` accepts the same optional selectors. Local sources have no remote version; full commit refs
@@ -244,15 +248,16 @@ skillsrc doctor         # report lock, install, cache, and project metadata prob
 skillsrc doctor --repair # restore repairable managed state
 ```
 
-Standalone skills shown by `list --all` remain outside skillsrc ownership. Declared-name collisions appear as the
-configured skill's `collision` state rather than as a second unmanaged row. `ls` is an alias for `list`.
+`skillsrc` does not take ownership of standalone skills shown by `list --all`. When an unmanaged skill collides with a
+declared name, the configured skill gets the `collision` state. `list` does not print a second unmanaged row. `ls` is an
+alias for `list`.
 
 `doctor --repair` restores repairable installations and project metadata. Unmanaged collisions must be resolved by the
 user.
 
-The Git cache defaults to the OS user cache directory plus `skillsrc/repos` (for example,
-`~/Library/Caches/skillsrc/repos`) and can be overridden with `--cache`. Concurrency lock files also stay in the user
-cache rather than in the project.
+By default, the Git cache is the OS user cache directory followed by `skillsrc/repos`. On macOS, for example, it is
+`~/Library/Caches/skillsrc/repos`. Use `--cache` to choose another directory. Concurrency lock files also stay in the
+user cache instead of the project.
 
 ## Scope selection
 
@@ -265,27 +270,27 @@ skillsrc sync     # nearest project skills.toml
 skillsrc -g sync  # ~/.agents/skills.toml
 ```
 
-Existing files in `~/.agents` are not migrated or changed by project commands.
+Project commands do not migrate or change existing files in `~/.agents`.
 
 ## Safety and recovery
 
-Each managed skill carries a `.skillsrc-managed.json` marker tied to its owning manifest. `skillsrc` replaces or removes
-only directories with a valid marker for that owner. An existing file, symlink, unmarked directory, or directory owned
-by another manifest is treated as a collision, left untouched, and stops the operation. Source provenance and upstream
-content hashes remain authoritative in `skills.lock`.
+Each managed skill has a `.skillsrc-managed.json` marker tied to its owning manifest. `skillsrc` replaces or removes a
+directory only when it has a valid marker for that owner. An existing file, symlink, unmarked directory, or directory
+owned by another manifest causes a collision. `skillsrc` leaves it untouched and stops the operation. `skills.lock`
+records the source and upstream content hashes.
 
-Installs use staging directories, backups, and transaction journals. The next mutating operation automatically recovers
-an interrupted replacement or prune. Use `skillsrc doctor` to report lock, install, cache, and project Git ignore
-problems; `skillsrc doctor --repair` restores repairable installation and project metadata. Unmanaged collisions must be
-resolved by the user.
+Installs use staging directories, backups, and transaction journals. After an interrupted replacement or prune, the
+next command that changes files runs recovery first. Use `skillsrc doctor` to report problems with locks, installations,
+the cache, and project Git ignore files. `skillsrc doctor --repair` restores installation and project metadata when it
+can. You must resolve unmanaged collisions yourself.
 
-Locks and hashes make installation reproducible; they do not make upstream skill instructions trustworthy. Review
+Locks and hashes make installation reproducible. They do not make upstream skill instructions trustworthy. Review
 sources and lockfile changes before installing or updating them. See [SECURITY.md](SECURITY.md) for vulnerability
-reporting and the full trust boundary.
+reporting and details about what `skillsrc` does and does not trust.
 
 ## Releasing
 
-Releases are tag-driven. For maintainers, with local `main` matching `origin/main`:
+Tags trigger releases. Maintainers can run these commands when local `main` matches `origin/main`:
 
 ```sh
 ./release.sh --dry-run
@@ -294,5 +299,4 @@ Releases are tag-driven. For maintainers, with local `main` matching `origin/mai
 
 ## Contributing and license
 
-Focused contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). `skillsrc` is available under the [MIT
-License](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) before sending a contribution. `skillsrc` uses the [MIT License](LICENSE).
